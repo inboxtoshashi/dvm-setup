@@ -16,6 +16,27 @@ CLI_JAR="jenkins-cli.jar"
 COOKIE_JAR="cookies.txt"
 
 ########################################
+# HELPER FUNCTIONS
+########################################
+wait_for_jenkins_http() {
+  echo "▶ Waiting for Jenkins HTTP..."
+  until curl -sf "$JENKINS_URL/login" >/dev/null 2>&1; do
+    sleep 5
+  done
+  echo "✅ Jenkins HTTP ready"
+}
+
+wait_for_jenkins_cli() {
+  echo "▶ Waiting for Jenkins CLI readiness..."
+  until java -jar "$CLI_JAR" -s "$JENKINS_URL" \
+    -auth "$ADMIN_USER:$ADMIN_PASS" \
+    who-am-i >/dev/null 2>&1; do
+    sleep 5
+  done
+  echo "✅ Jenkins CLI ready"
+}
+
+########################################
 # OS DETECTION
 ########################################
 OS="$(uname -s)"
@@ -85,11 +106,13 @@ fi
 ########################################
 # WAIT FOR JENKINS HTTP
 ########################################
-echo "▶ Waiting for Jenkins HTTP..."
-until curl -sf "$JENKINS_URL/login" >/dev/null 2>&1; do
-  sleep 5
-done
-echo "✅ Jenkins HTTP ready"
+wait_for_jenkins_http
+
+########################################
+# DOWNLOAD CLI (EARLY)
+########################################
+echo "▶ Downloading Jenkins CLI..."
+curl -sf -o "$CLI_JAR" "$JENKINS_URL/jnlpJars/jenkins-cli.jar"
 
 ########################################
 # INIT GROOVY (ADMIN + NO WIZARD)
@@ -99,11 +122,21 @@ INIT_DIR="$JENKINS_HOME/init.groovy.d"
 
 if [[ "$PLATFORM" == "mac" ]]; then
   mkdir -p "$INIT_DIR"
+  chmod 755 "$INIT_DIR"
 else
   sudo mkdir -p "$INIT_DIR"
 fi
 
 SECURITY_GROOVY="$INIT_DIR/00-security.groovy"
+
+# Remove existing file if it exists (might be owned by root)
+if [[ -f "$SECURITY_GROOVY" ]]; then
+  if [[ "$PLATFORM" == "mac" ]]; then
+    rm -f "$SECURITY_GROOVY" 2>/dev/null || sudo rm -f "$SECURITY_GROOVY"
+  else
+    sudo rm -f "$SECURITY_GROOVY"
+  fi
+fi
 
 if [[ "$PLATFORM" == "mac" ]]; then
   cat > "$SECURITY_GROOVY" <<'EOF'
@@ -159,17 +192,8 @@ else
   sudo systemctl restart jenkins
 fi
 
-echo "▶ Waiting for Jenkins to be ready (checking crumbIssuer)..."
-until curl -sf -u "$ADMIN_USER:$ADMIN_PASS" "$JENKINS_URL/crumbIssuer/api/json" >/dev/null 2>&1; do
-  sleep 5
-done
-echo "✅ Jenkins ready with authentication"
-
-########################################
-# DOWNLOAD CLI
-########################################
-echo "▶ Downloading Jenkins CLI..."
-curl -sf -o "$CLI_JAR" "$JENKINS_URL/jnlpJars/jenkins-cli.jar"
+wait_for_jenkins_http
+wait_for_jenkins_cli
 
 ########################################
 # INSTALL PLUGINS FROM FILE
@@ -191,11 +215,8 @@ java -jar "$CLI_JAR" -s "$JENKINS_URL" \
   -auth "$ADMIN_USER:$ADMIN_PASS" \
   safe-restart
 
-echo "▶ Waiting for Jenkins to be ready (checking crumbIssuer)..."
-until curl -sf -u "$ADMIN_USER:$ADMIN_PASS" "$JENKINS_URL/crumbIssuer/api/json" >/dev/null 2>&1; do
-  sleep 5
-done
-echo "✅ Plugins installed and Jenkins ready"
+wait_for_jenkins_http
+wait_for_jenkins_cli
 
 ########################################
 # ADD PLACEHOLDER AWS CREDS
@@ -234,9 +255,54 @@ if (!existing) {
 }
 EOF
 
-java -jar "$CLI_JAR" -s "$JENKINS_URL" \
-  -auth "$ADMIN_USER:$ADMIN_PASS" \
-  groovy = add-aws-creds.groovy
+# Retry loop for AWS credentials (max 6 attempts = 30 seconds)
+MAX_RETRIES=6
+RETRY_COUNT=0
+AWS_CREDS_SUCCESS=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  echo "  Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES..."
+  
+  # Run in background with manual timeout
+  java -jar "$CLI_JAR" -s "$JENKINS_URL" \
+    -auth "$ADMIN_USER:$ADMIN_PASS" \
+    groovy = add-aws-creds.groovy &
+  
+  GROOVY_PID=$!
+  
+  # Wait up to 10 seconds for the command to complete
+  WAIT_COUNT=0
+  while [ $WAIT_COUNT -lt 10 ]; do
+    if ! kill -0 $GROOVY_PID 2>/dev/null; then
+      # Process finished
+      wait $GROOVY_PID
+      if [ $? -eq 0 ]; then
+        AWS_CREDS_SUCCESS=true
+        break 2
+      else
+        break
+      fi
+    fi
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+  done
+  
+  # Kill if still running
+  if kill -0 $GROOVY_PID 2>/dev/null; then
+    kill -9 $GROOVY_PID 2>/dev/null
+    wait $GROOVY_PID 2>/dev/null
+  fi
+  
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+    sleep 5
+  fi
+done
+
+if [ "$AWS_CREDS_SUCCESS" = false ]; then
+  echo "⚠️  Warning: Failed to add AWS credentials after $MAX_RETRIES attempts"
+  echo "⚠️  You may need to add AWS credentials manually in Jenkins"
+fi
 
 rm -f add-aws-creds.groovy
 
