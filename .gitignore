@@ -3,6 +3,9 @@ jenkins-cli.jar
 cookies.txt
 crumb.json
 add-aws-creds.groovy
+/tmp/jenkins-setup-env.sh
+/tmp/jenkins-cookies.txt
+/tmp/add-aws-creds.groovy
 
 # macOS
 .DS_Store
