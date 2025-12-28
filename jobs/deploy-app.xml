@@ -1,0 +1,29 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@2.40">
+  <actions/>
+  <description>Deploy App Job</description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
+    <script><![CDATA[
+pipeline {
+  agent any
+  stages {
+    stage('Clone App') {
+      steps {
+        sh 'git clone https://github.com/inboxtoshashi/deploy_url_app.git $WORKSPACE/deploy_url_app'
+      }
+    }
+    stage('Run main.sh') {
+      steps {
+        sh 'cd $WORKSPACE/deploy_url_app && ./main.sh'
+      }
+    }
+  }
+}
+    ]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

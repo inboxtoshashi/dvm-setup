@@ -1,0 +1,24 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@2.40">
+  <actions/>
+  <description>Deploy Monitoring Job</description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
+    <script><![CDATA[
+pipeline {
+  agent any
+  stages {
+    stage('Deploy Monitoring') {
+      steps {
+        sh 'cd $WORKSPACE/monitoring_stack && ./deploy.sh'
+      }
+    }
+  }
+}
+    ]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>
