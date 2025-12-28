@@ -7,6 +7,10 @@ add-aws-creds.groovy
 /tmp/jenkins-cookies.txt
 /tmp/add-aws-creds.groovy
 
+# Legacy/deprecated files
+jenkins_setup.sh.OLD
+jenkins_setup.sh.backup
+
 # macOS
 .DS_Store
 .AppleDouble

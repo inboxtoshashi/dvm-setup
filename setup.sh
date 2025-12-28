@@ -81,7 +81,9 @@ for step_info in "${STEPS[@]}"; do
   echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${BOLD}Step $CURRENT_STEP/$TOTAL_STEPS: $DESCRIPTION${NC}"
   echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  
+  Access Information:
+  🔗 URL:      http://localhost:8080
+  👤 Username: admin
   if bash "$SCRIPTS_DIR/$SCRIPT_NAME"; then
     echo -e "${GREEN}✅ Step $CURRENT_STEP completed successfully${NC}"
   else
@@ -103,6 +105,13 @@ if [[ -f /tmp/jenkins-setup-env.sh ]]; then
   source /tmp/jenkins-setup-env.sh
 fi
 
+# Determine environment type for display
+if [[ "$JENKINS_URL" == *"localhost"* ]]; then
+  ENV_TYPE="Local"
+else
+  ENV_TYPE="EC2"
+fi
+
 ########################################
 # SUCCESS BANNER
 ########################################
@@ -114,9 +123,10 @@ echo ""
 echo -e "${GREEN}Jenkins is ready!${NC}"
 echo ""
 echo -e "${BOLD}Access Information:${NC}"
-echo -e "  🔗 URL:      ${BLUE}${JENKINS_URL:-http://localhost:8080}${NC}"
-echo -e "  👤 Username: ${BLUE}admin${NC}"
-echo -e "  🔑 Password: ${BLUE}admin${NC}"
+echo -e "  🌍 Environment: ${BLUE}${ENV_TYPE}${NC}"
+echo -e "  🔗 URL:         ${BLUE}${JENKINS_URL:-http://localhost:8080}${NC}"
+echo -e "  👤 Username:    ${BLUE}admin${NC}"
+echo -e "  🔑 Password:    ${BLUE}admin${NC}"
 echo ""
 echo -e "${YELLOW}⚠️  Remember to change the default password in production!${NC}"
 echo ""
