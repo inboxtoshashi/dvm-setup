@@ -35,11 +35,20 @@ One command to install and configure Jenkins with pre-defined CI/CD jobs for inf
 git clone <your-repo-url>
 cd dvm-setup
 
-# Run the bootstrap script
-sh ./jenkins_setup.sh
+# Run the main setup script
+sh ./setup.sh
 ```
 
 **That's it!** ☕ Grab a coffee while Jenkins installs (5-10 minutes)
+
+The setup script will automatically:
+1. ✅ Install dependencies
+2. ✅ Configure security
+3. ✅ Install plugins
+4. ✅ Setup credentials
+5. ✅ Create all jobs
+
+Each step must succeed before proceeding to the next.
 
 ### Access Jenkins
 
@@ -56,18 +65,34 @@ sh ./jenkins_setup.sh
 
 ```
 dvm-setup/
-├── jenkins_setup.sh           # Main automation script
+├── setup.sh                   # 🎯 Main orchestrator (run this!)
+├── jenkins_setup.sh           # Legacy monolithic script (deprecated)
 ├── plugins.txt                # Jenkins plugins list
-├── add-aws-creds.groovy       # AWS credentials setup script
 ├── verify-aws-plugin.groovy   # AWS plugin verification
 ├── README.md                  # This file
+├── scripts/                   # 📂 Modular setup scripts
+│   ├── utils.sh               # Shared utility functions
+│   ├── 01_install_dependencies.sh  # Install Jenkins & Java
+│   ├── 02_setup_security.sh   # Configure admin user
+│   ├── 03_install_plugins.sh  # Install all plugins
+│   ├── 04_setup_credentials.sh # Setup AWS credentials
+│   └── 05_create_jobs.sh      # Create Jenkins jobs
 └── jobs/                      # Jenkins job definitions
-    ├── Git_Code.xml           # Consolidated git clone job (App/Terraform/Monitoring)
+    ├── Git_Code.xml           # Consolidated git clone job
     ├── deploy-infra.xml       # Deploy Terraform infrastructure
     ├── deploy-app.xml         # Deploy application
     ├── deploy-monitoring.xml  # Deploy monitoring stack
     └── destroy-infra.xml      # Destroy Terraform infrastructure
 ```
+
+### Why Modular Scripts?
+
+The new modular structure provides:
+- ✅ **Better readability** - Each script has a single, clear purpose
+- ✅ **Easier debugging** - Identify and fix issues in specific steps
+- ✅ **Sequential execution** - Each step only runs if the previous succeeded
+- ✅ **Reusable components** - Individual scripts can be run standalone
+- ✅ **Progress tracking** - Clear visual feedback on what's happening
 
 ---
 
