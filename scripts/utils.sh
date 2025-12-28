@@ -76,11 +76,15 @@ wait_for_jenkins_cli() {
 detect_environment() {
   log_info "Detecting environment..."
   
-  if curl -s --connect-timeout 2 http://169.254.169.254/latest/meta-data/public-ipv4 >/dev/null 2>&1; then
-    PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+  # Try to get EC2 public IP with proper timeout and validation
+  PUBLIC_IP=$(curl -s --connect-timeout 3 --max-time 5 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null)
+  
+  # Check if we got a valid IP address
+  if [[ -n "$PUBLIC_IP" && "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     JENKINS_URL="http://$PUBLIC_IP:$DEFAULT_PORT"
     log_info "Running on EC2: $JENKINS_URL"
   else
+    # Fall back to localhost
     JENKINS_URL="http://localhost:$DEFAULT_PORT"
     log_info "Running locally: $JENKINS_URL"
   fi
