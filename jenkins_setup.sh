@@ -1,192 +1,253 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-############################################
+########################################
 # CONFIG
-############################################
+########################################
 JENKINS_URL="http://localhost:8080"
 ADMIN_USER="admin"
 ADMIN_PASS="admin"
+JENKINS_HOME="${HOME}/.jenkins"
+JOBS_DIR="$(pwd)/jobs"
 
-CLI_JAR="jenkins-cli.jar"
 COOKIE_JAR="cookies.txt"
-JOBS_DIR="$PWD/jobs"
+CRUMB_JSON="crumb.json"
+CLI_JAR="jenkins-cli.jar"
 
-############################################
+REQUIRED_PLUGINS=(
+  workflow-job
+  workflow-cps
+  credentials
+  credentials-binding
+  aws-credentials
+)
+
+########################################
+# OS DETECTION
+########################################
+OS="$(uname -s)"
+if [[ "$OS" == "Darwin" ]]; then
+  PLATFORM="mac"
+elif [[ "$OS" == "Linux" ]]; then
+  PLATFORM="linux"
+else
+  echo "❌ Unsupported OS: $OS"
+  exit 1
+fi
+
+echo "▶ Detected platform: $PLATFORM"
+
+########################################
 # INSTALL DEPENDENCIES
-############################################
-echo "Installing dependencies..."
-brew update
-brew install jenkins-lts jq openjdk@21
+########################################
+install_deps_mac() {
+  command -v brew >/dev/null || {
+    echo "❌ Homebrew not installed"
+    exit 1
+  }
 
-############################################
-# JAVA (NO MANUAL SETUP, NO sudo)
-############################################
-JAVA_PREFIX="$(brew --prefix openjdk@21)"
-export JAVA_HOME="$JAVA_PREFIX/libexec/openjdk.jdk/Contents/Home"
-export PATH="$JAVA_HOME/bin:$PATH"
+  brew update
+  brew install jenkins-lts openjdk jq
+  brew services restart jenkins-lts
 
-echo "Using Java:"
-"$JAVA_HOME/bin/java" -version
-
-############################################
-# START JENKINS
-############################################
-echo "Starting Jenkins..."
-brew services start jenkins-lts
-
-############################################
-# WAIT FUNCTIONS
-############################################
-wait_for_http() {
-  echo "Waiting for Jenkins HTTP..."
-  until curl -s "$JENKINS_URL/login" >/dev/null; do
-    sleep 5
-  done
+  export JAVA_HOME="$(brew --prefix openjdk)"
+  export PATH="$JAVA_HOME/bin:$PATH"
 }
 
-wait_for_core() {
-  echo "Waiting for Jenkins core (JSON API)..."
-  until curl -s -u "$ADMIN_USER:$ADMIN_PASS" \
-    "$JENKINS_URL/api/json" | jq -e 'has("mode")' >/dev/null 2>&1; do
-    sleep 5
-  done
+install_deps_linux() {
+  sudo apt update
+  sudo apt install -y \
+    openjdk-17-jdk \
+    curl \
+    jq \
+    gnupg
+
+  curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key \
+    | sudo tee /usr/share/keyrings/jenkins-keyring.asc >/dev/null
+
+  echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
+    https://pkg.jenkins.io/debian-stable binary/ \
+    | sudo tee /etc/apt/sources.list.d/jenkins.list >/dev/null
+
+  sudo apt update
+  sudo apt install -y jenkins
+
+  sudo systemctl enable jenkins
+  sudo systemctl restart jenkins
+
+  export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+  export PATH="$JAVA_HOME/bin:$PATH"
 }
 
-wait_for_cli() {
-  echo "Waiting for Jenkins CLI..."
-  local retries=60
-  until "$JAVA_HOME/bin/java" -jar "$CLI_JAR" \
-      -s "$JENKINS_URL" \
-      -auth "$ADMIN_USER:$ADMIN_PASS" \
-      who-am-i >/dev/null 2>&1; do
-    retries=$((retries-1))
-    if [ "$retries" -le 0 ]; then
-      echo "❌ Jenkins CLI did not become ready"
-      exit 1
-    fi
-    sleep 5
-  done
-  echo "✅ Jenkins CLI is ready"
+if [[ "$PLATFORM" == "mac" ]]; then
+  install_deps_mac
+else
+  install_deps_linux
+fi
+
+java -version
+
+########################################
+# WAIT FOR JENKINS
+########################################
+echo "▶ Waiting for Jenkins HTTP..."
+until curl -s "$JENKINS_URL/login" >/dev/null; do
+  sleep 5
+done
+echo "✅ Jenkins HTTP ready"
+
+########################################
+# INIT GROOVY (ADMIN + NO WIZARD)
+########################################
+INIT_DIR="$JENKINS_HOME/init.groovy.d"
+mkdir -p "$INIT_DIR"
+
+cat <<'EOF' > "$INIT_DIR/00-basic-security.groovy"
+import jenkins.model.*
+import hudson.security.*
+import jenkins.install.*
+
+def j = Jenkins.get()
+
+j.setInstallState(InstallState.INITIAL_SETUP_COMPLETED)
+
+def realm = new HudsonPrivateSecurityRealm(false)
+if (realm.getUser("admin") == null) {
+  realm.createAccount("admin", "admin")
 }
+j.setSecurityRealm(realm)
 
-wait_for_http
-wait_for_core
+def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+strategy.setAllowAnonymousRead(false)
+j.setAuthorizationStrategy(strategy)
 
-############################################
-# DOWNLOAD CLI
-############################################
-echo "Downloading Jenkins CLI..."
+j.save()
+EOF
+
+echo "▶ Restarting Jenkins to apply security..."
+if [[ "$PLATFORM" == "mac" ]]; then
+  brew services restart jenkins-lts
+else
+  sudo systemctl restart jenkins
+fi
+
+echo "▶ Waiting for Jenkins after restart..."
+until curl -s "$JENKINS_URL/login" >/dev/null; do
+  sleep 5
+done
+echo "✅ Jenkins ready"
+
+########################################
+# JENKINS CLI
+########################################
+echo "▶ Downloading Jenkins CLI..."
 curl -s -o "$CLI_JAR" "$JENKINS_URL/jnlpJars/jenkins-cli.jar"
 
-wait_for_cli
+########################################
+# INSTALL PLUGINS
+########################################
+echo "▶ Installing plugins..."
+for p in "${REQUIRED_PLUGINS[@]}"; do
+  java -jar "$CLI_JAR" -s "$JENKINS_URL" \
+    -auth "$ADMIN_USER:$ADMIN_PASS" \
+    install-plugin "$p"
+done
 
-############################################
-# INSTALL REQUIRED PLUGINS
-############################################
-echo "Installing plugins..."
-"$JAVA_HOME/bin/java" -jar "$CLI_JAR" \
-  -s "$JENKINS_URL" \
-  -auth "$ADMIN_USER:$ADMIN_PASS" \
-  install-plugin \
-    workflow-aggregator \
-    credentials \
-    credentials-binding \
-    aws-credentials
-
-"$JAVA_HOME/bin/java" -jar "$CLI_JAR" \
-  -s "$JENKINS_URL" \
+java -jar "$CLI_JAR" -s "$JENKINS_URL" \
   -auth "$ADMIN_USER:$ADMIN_PASS" safe-restart
 
-wait_for_http
-wait_for_core
-wait_for_cli
+echo "▶ Waiting for Jenkins after plugin restart..."
+until curl -s "$JENKINS_URL/login" >/dev/null; do
+  sleep 5
+done
+echo "✅ Plugins ready"
 
-############################################
-# CREATE PLACEHOLDER AWS CREDENTIALS
-############################################
-echo "Creating placeholder AWS credentials..."
-
-"$JAVA_HOME/bin/java" -jar "$CLI_JAR" \
-  -s "$JENKINS_URL" \
-  -auth "$ADMIN_USER:$ADMIN_PASS" groovy = <<'EOF'
+########################################
+# ADD PLACEHOLDER AWS CREDS
+########################################
+cat <<'EOF' > add-aws-creds.groovy
 import jenkins.model.*
 import com.cloudbees.plugins.credentials.*
 import com.cloudbees.plugins.credentials.domains.*
-import com.cloudbees.jenkins.plugins.awscredentials.AWSCredentialsImpl
+import com.cloudbees.jenkins.plugins.awscredentials.*
 
 def store = Jenkins.get()
-  .getExtensionList(SystemCredentialsProvider.class)[0]
+  .getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0]
   .getStore()
 
-def id = "aws-creds"
+def existing = CredentialsProvider.lookupCredentials(
+  AWSCredentialsImpl.class,
+  Jenkins.get(),
+  null,
+  null
+).find { it.id == 'aws-creds' }
 
-if (store.getCredentials(Domain.global()).any { it.id == id }) {
-  println("aws-creds already exists")
-  return
-}
-
-store.addCredentials(
-  Domain.global(),
-  new AWSCredentialsImpl(
-    CredentialsScope.GLOBAL,
-    id,
-    "Placeholder AWS credentials",
-    "DUMMY_ACCESS_KEY",
-    "DUMMY_SECRET_KEY"
+if (!existing) {
+  store.addCredentials(Domain.global(),
+    new AWSCredentialsImpl(
+      CredentialsScope.GLOBAL,
+      "aws-creds",
+      "Placeholder AWS credentials",
+      "DUMMY",
+      "DUMMY"
+    )
   )
-)
-
-println("aws-creds CREATED")
+  println("Created placeholder aws-creds")
+} else {
+  println("aws-creds already exists")
+}
 EOF
 
-############################################
-# CREATE / UPDATE JENKINS JOBS
-############################################
-echo "Creating / updating Jenkins jobs..."
+java -jar "$CLI_JAR" -s "$JENKINS_URL" \
+  -auth "$ADMIN_USER:$ADMIN_PASS" \
+  groovy = add-aws-creds.groovy
 
-CRUMB_JSON=$(curl -s -u "$ADMIN_USER:$ADMIN_PASS" -c "$COOKIE_JAR" \
-  "$JENKINS_URL/crumbIssuer/api/json")
+########################################
+# CSRF CRUMB
+########################################
+curl -s -u "$ADMIN_USER:$ADMIN_PASS" \
+  -c "$COOKIE_JAR" \
+  "$JENKINS_URL/crumbIssuer/api/json" > "$CRUMB_JSON"
 
-CRUMB_FIELD=$(echo "$CRUMB_JSON" | jq -r '.crumbRequestField')
-CRUMB_VALUE=$(echo "$CRUMB_JSON" | jq -r '.crumb')
+CRUMB_FIELD=$(jq -r '.crumbRequestField' "$CRUMB_JSON")
+CRUMB_VALUE=$(jq -r '.crumb' "$CRUMB_JSON")
 
-for jobfile in "$JOBS_DIR"/*.xml; do
-  JOB_NAME=$(basename "$jobfile" .xml)
-  echo "Processing job: $JOB_NAME"
+########################################
+# CREATE / UPDATE JOBS
+########################################
+echo "▶ Processing jobs in $JOBS_DIR"
+
+for job in "$JOBS_DIR"/*.xml; do
+  NAME="$(basename "$job" .xml)"
 
   STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
     -u "$ADMIN_USER:$ADMIN_PASS" \
-    "$JENKINS_URL/job/$JOB_NAME/api/json")
+    "$JENKINS_URL/job/$NAME/api/json")
 
-  if [ "$STATUS" = "200" ]; then
-    echo "Updating job: $JOB_NAME"
-    curl -s \
-      -u "$ADMIN_USER:$ADMIN_PASS" \
+  if [[ "$STATUS" == "200" ]]; then
+    echo "↻ Updating job $NAME"
+    curl -s -u "$ADMIN_USER:$ADMIN_PASS" \
       -b "$COOKIE_JAR" \
       -H "$CRUMB_FIELD: $CRUMB_VALUE" \
       -H "Content-Type: application/xml" \
-      --data-binary @"$jobfile" \
-      "$JENKINS_URL/job/$JOB_NAME/config.xml"
+      --data-binary @"$job" \
+      "$JENKINS_URL/job/$NAME/config.xml"
   else
-    echo "Creating job: $JOB_NAME"
-    curl -s \
-      -u "$ADMIN_USER:$ADMIN_PASS" \
+    echo "＋ Creating job $NAME"
+    curl -s -u "$ADMIN_USER:$ADMIN_PASS" \
       -b "$COOKIE_JAR" \
       -H "$CRUMB_FIELD: $CRUMB_VALUE" \
       -H "Content-Type: application/xml" \
-      --data-binary @"$jobfile" \
-      "$JENKINS_URL/createItem?name=$JOB_NAME"
+      --data-binary @"$job" \
+      "$JENKINS_URL/createItem?name=$NAME"
   fi
 done
 
-rm -f "$COOKIE_JAR"
+########################################
+# CLEANUP
+########################################
+rm -f "$COOKIE_JAR" "$CRUMB_JSON" add-aws-creds.groovy
 
-############################################
-# DONE
-############################################
 echo
-echo "✅ Jenkins automation COMPLETE"
-echo "🔐 Login: admin / admin"
-echo "📦 Jobs loaded from ./jobs"
-echo "🔑 aws-creds placeholder created"
+echo "✅ Jenkins setup COMPLETE"
+echo "🔑 Login: admin / admin"
