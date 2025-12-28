@@ -66,7 +66,6 @@ Each step must succeed before proceeding to the next.
 ```
 dvm-setup/
 ├── setup.sh                   # 🎯 Main orchestrator (run this!)
-├── jenkins_setup.sh           # Legacy monolithic script (deprecated)
 ├── plugins.txt                # Jenkins plugins list
 ├── verify-aws-plugin.groovy   # AWS plugin verification
 ├── README.md                  # This file

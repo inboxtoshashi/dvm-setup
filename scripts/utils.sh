@@ -76,6 +76,9 @@ wait_for_jenkins_cli() {
 detect_environment() {
   log_info "Detecting environment..."
   
+  # Set default port if not already set
+  DEFAULT_PORT=${DEFAULT_PORT:-8080}
+  
   # Try to get EC2 public IP with proper timeout and validation
   PUBLIC_IP=$(curl -s --connect-timeout 3 --max-time 5 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null)
   
@@ -90,6 +93,7 @@ detect_environment() {
   fi
   
   export JENKINS_URL
+  export DEFAULT_PORT
 }
 
 ########################################
