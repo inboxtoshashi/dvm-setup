@@ -1,0 +1,118 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@2.40">
+  <description>Destroy Infra Job</description>
+  <keepDependencies>false</keepDependencies>
+
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+
+        <!-- ACTION dropdown -->
+        <hudson.model.ChoiceParameterDefinition>
+          <name>CONFIRM_DESTROY</name>
+          <description>
+            YES = Run Terraform DESTROY PLAN (preview only)  
+            NO  = Run Terraform DESTROY APPLY (will destroy resources)
+          </description>
+          <choices class="java.util.Arrays$ArrayList">
+            <a class="string-array">
+              <string>YES</string>
+              <string>NO</string>
+            </a>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+
+        <!-- ENV dropdown -->
+        <hudson.model.ChoiceParameterDefinition>
+          <name>ENV</name>
+          <description>Select environment</description>
+          <choices class="java.util.Arrays$ArrayList">
+            <a class="string-array">
+              <string>dev</string>
+              <string>prod</string>
+            </a>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+
+        <!-- Parent workspace path -->
+        <hudson.model.StringParameterDefinition>
+          <name>PARENT_WORKSPACE</name>
+          <description>Parent job workspace path</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
+    <script><![CDATA[
+pipeline {
+  agent any
+
+  stages {
+    stage('Destroy Infra') {
+      steps {
+        script {
+          def terraformBin = sh(script: 'which terraform || echo /opt/homebrew/bin/terraform', returnStdout: true).trim()
+          echo "Using Terraform: ${terraformBin}"
+          
+          withCredentials([[
+            $class: 'AmazonWebServicesCredentialsBinding',
+            credentialsId: 'aws-creds',
+            accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+            secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+          ]]) {
+
+            sh """
+              # Backup existing state before destroy
+              if [ -f "${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate" ]; then
+                TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
+                mkdir -p ${params.PARENT_WORKSPACE}/tfstate-${params.ENV}-backups
+                cp ${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate \\
+                   ${params.PARENT_WORKSPACE}/tfstate-${params.ENV}-backups/terraform.tfstate.\${TIMESTAMP}
+                echo "✅ Backed up state to tfstate-${params.ENV}-backups/terraform.tfstate.\${TIMESTAMP}"
+              fi
+              
+              # Run terraform
+              cd ${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}
+              export AWS_ACCESS_KEY_ID="\${AWS_ACCESS_KEY_ID}"
+              export AWS_SECRET_ACCESS_KEY="\${AWS_SECRET_ACCESS_KEY}"
+              ${terraformBin} init
+            """
+
+            if (params.CONFIRM_DESTROY == 'YES') {
+              sh """
+                cd ${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}
+                export AWS_ACCESS_KEY_ID="\${AWS_ACCESS_KEY_ID}"
+                export AWS_SECRET_ACCESS_KEY="\${AWS_SECRET_ACCESS_KEY}"
+                ${terraformBin} plan \\
+                  -var-file=../${params.ENV}.tfvars \\
+                  -state=${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate \\
+                  -destroy
+              """
+            } else {
+              sh """
+                cd ${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}
+                export AWS_ACCESS_KEY_ID="\${AWS_ACCESS_KEY_ID}"
+                export AWS_SECRET_ACCESS_KEY="\${AWS_SECRET_ACCESS_KEY}"
+                ${terraformBin} destroy \\
+                  -var-file=../${params.ENV}.tfvars \\
+                  -state=${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate \\
+                  -auto-approve
+              """
+            }
+
+          }
+        }
+      }
+    }
+  }
+}
+    ]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

@@ -1,0 +1,42 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@2.40">
+  <actions/>
+  <description>Git Clone Deploy URL App Repository</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>ENV</name>
+          <description>Environment (dev or prod)</description>
+          <defaultValue>dev</defaultValue>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
+    <script><![CDATA[
+pipeline {
+  agent any
+  stages {
+    stage('Clone Deploy URL App') {
+      steps {
+        sh 'git clone https://github.com/inboxtoshashi/deploy_url_app.git $WORKSPACE/deploy_url_app'
+      }
+    }
+  }
+  post {
+    success {
+      echo '✅ Deploy URL App repository cloned successfully!'
+    }
+    failure {
+      echo '❌ Failed to clone Deploy URL App repository.'
+    }
+  }
+}
+    ]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

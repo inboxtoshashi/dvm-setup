@@ -1,0 +1,109 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@2.40">
+  <actions/>
+  <description>Deploy Monitoring Stack - Deploys Prometheus, Grafana, and related monitoring tools to the EC2 instance</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>ENV</name>
+          <description>Select the environment to deploy monitoring to</description>
+          <choices class="java.util.Arrays$ArrayList">
+            <a class="string-array">
+              <string>dev</string>
+              <string>prod</string>
+            </a>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PARENT_WORKSPACE</name>
+          <description>Parent job workspace path</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
+    <script><![CDATA[
+pipeline {
+  agent any
+  stages {
+    stage('Clone Deploy Scripts') {
+      steps {
+        sh 'git clone https://github.com/inboxtoshashi/deploy_url_app.git $WORKSPACE/deploy_url_app'
+      }
+    }
+    stage('Get EC2 IP and Copy Monitoring Script') {
+      steps {
+        script {
+          def terraformBin = sh(script: 'which terraform || echo /opt/homebrew/bin/terraform', returnStdout: true).trim()
+          def terraformDir = "${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}"
+          def stateFile = "${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate"
+          def ec2Ip = sh(
+            script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw public_ip",
+            returnStdout: true
+          ).trim()
+          
+          echo "EC2 IP: ${ec2Ip}"
+          
+          sh """
+            cd \$WORKSPACE/deploy_url_app
+            scp -i /var/lib/jenkins/.ssh/url_app.pem \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              deploy_monitoring/deploy_monitoring.sh \
+              ubuntu@${ec2Ip}:/home/ubuntu/
+          """
+        }
+      }
+    }
+    stage('Deploy Monitoring Stack') {
+      steps {
+        script {
+          def terraformBin = sh(script: 'which terraform || echo /opt/homebrew/bin/terraform', returnStdout: true).trim()
+          def terraformDir = "${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}"
+          def stateFile = "${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate"
+          def ec2Ip = sh(
+            script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw public_ip",
+            returnStdout: true
+          ).trim()
+          
+          def appName = sh(
+            script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw app_name",
+            returnStdout: true
+          ).trim()
+          
+          echo "Deploying monitoring for: ${appName}"
+          
+          sh """
+            ssh -i /var/lib/jenkins/.ssh/url_app.pem \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              ubuntu@${ec2Ip} << 'ENDSSH'
+              cd /home/ubuntu
+              dos2unix deploy_monitoring.sh || true
+              chmod +x deploy_monitoring.sh
+              export APP_NAME="${appName}"
+              ./deploy_monitoring.sh
+ENDSSH
+          """
+        }
+      }
+    }
+  }
+  post {
+    success {
+      echo '✅ Monitoring Stack deployed successfully!'
+      echo '📊 Access Grafana at: http://<EC2_IP>:3000 (admin/admin)'
+      echo '📈 Access Prometheus at: http://<EC2_IP>:9091'
+    }
+    failure {
+      echo '❌ Monitoring Stack deployment failed. Check the logs above.'
+    }
+  }
+}
+    ]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

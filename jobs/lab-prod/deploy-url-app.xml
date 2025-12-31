@@ -1,0 +1,228 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@2.40">
+  <actions/>
+  <description>Deploy URL Shortener App - PROD Environment | Select what you want to execute</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.BooleanParameterDefinition>
+          <name>GIT_INFRA</name>
+          <description>Clone Infrastructure Repository</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
+        <hudson.model.BooleanParameterDefinition>
+          <name>GIT_APP</name>
+          <description>Clone Application Deployment Repository</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
+        <hudson.model.BooleanParameterDefinition>
+          <name>GIT_MONITORING</name>
+          <description>Clone Monitoring Stack Repository</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
+        <hudson.model.BooleanParameterDefinition>
+          <name>DEPLOY_APP</name>
+          <description>Deploy URL Shortener Application</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
+        <hudson.model.BooleanParameterDefinition>
+          <name>DEPLOY_MONITORING</name>
+          <description>Deploy Monitoring Stack (Prometheus, Grafana)</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>DEPLOY_INFRA_ACTION</name>
+          <description>Deploy Infrastructure: SKIP = Do nothing | PLAN = Terraform plan only | APPLY = Create resources</description>
+          <choices class="java.util.Arrays$ArrayList">
+            <a class="string-array">
+              <string>SKIP</string>
+              <string>PLAN</string>
+              <string>APPLY</string>
+            </a>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>DESTROY_INFRA_ACTION</name>
+          <description>Destroy Infrastructure: SKIP = Do nothing | PLAN = Show destroy preview | DESTROY = Delete all resources</description>
+          <choices class="java.util.Arrays$ArrayList">
+            <a class="string-array">
+              <string>SKIP</string>
+              <string>PLAN</string>
+              <string>DESTROY</string>
+            </a>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
+    <script><![CDATA[
+pipeline {
+  agent any
+  environment {
+    ENV = 'prod'
+  }
+  stages {
+    stage('Environment Info') {
+      steps {
+        echo '=========================================='
+        echo '🏭 LAB-PROD DEPLOYMENT PIPELINE'
+        echo '=========================================='
+        echo "Environment: ${ENV}"
+        echo "Git Infra: ${params.GIT_INFRA}"
+        echo "Git App: ${params.GIT_APP}"
+        echo "Git Monitoring: ${params.GIT_MONITORING}"
+        echo "Deploy Infra: ${params.DEPLOY_INFRA}"
+        script {
+          if (params.DEPLOY_INFRA) {
+            def mode = params.CONFIRM_APPLY == 'YES' ? 'PLAN only' : 'APPLY'
+            echo "  -> Terraform Mode: ${params.CONFIRM_APPLY} = ${mode}"
+          }
+        }
+        echo "Deploy App: ${params.DEPLOY_APP}"
+        echo "Deploy Monitoring: ${params.DEPLOY_MONITORING}"
+        echo "Destroy Infra: ${params.DESTROY_INFRA}"
+        script {
+          if (!params.DEPLOY_INFRA && !params.DESTROY_INFRA) {
+            echo "INFO: CONFIRM_APPLY ignored (no infrastructure operations selected)"
+          }
+        }
+        echo '==========================================' 
+      }
+    }
+    
+    stage('Git Clone Infra') {
+      when {
+        expression { params.GIT_INFRA == true }
+      }
+      steps {
+        echo '📥 Cloning/Updating Infrastructure Repository...'
+        sh '''
+          if [ -d "url_infra/.git" ]; then
+            echo "Repository exists, pulling latest changes..."
+            cd url_infra && git pull
+          else
+            echo "Repository does not exist, cloning..."
+            git clone https://github.com/inboxtoshashi/url_infra.git url_infra
+          fi
+        '''
+      }
+    }
+    
+    stage('Git Clone App') {
+      when {
+        expression { params.GIT_APP == true }
+      }
+      steps {
+        echo '📥 Cloning/Updating Application Repository...'
+        sh '''
+          if [ -d "urlshortener_docker/.git" ]; then
+            echo "Repository exists, pulling latest changes..."
+            cd urlshortener_docker && git pull
+          else
+            echo "Repository does not exist, cloning..."
+            git clone https://github.com/inboxtoshashi/urlshortener_docker.git urlshortener_docker
+          fi
+        '''
+      }
+    }
+    
+    stage('Git Clone Monitoring') {
+      when {
+        expression { params.GIT_MONITORING == true }
+      }
+      steps {
+        echo '📥 Cloning/Updating Monitoring Repository...'
+        sh '''
+          if [ -d "monitoring_stack/.git" ]; then
+            echo "Repository exists, pulling latest changes..."
+            cd monitoring_stack && git pull
+          else
+            echo "Repository does not exist, cloning..."
+            git clone https://github.com/inboxtoshashi/monitoring_stack.git monitoring_stack
+          fi
+        '''
+      }
+    }
+    
+    stage('Deploy Infrastructure') {
+      when {
+        expression { params.DEPLOY_INFRA_ACTION != 'SKIP' }
+      }
+      steps {
+        echo '🏗️ Deploying Infrastructure...'
+        script {
+          def confirmApply = params.DEPLOY_INFRA_ACTION == 'PLAN' ? 'YES' : 'NO'
+          build job: '/TEMPLATES/Deploy-Infra', parameters: [
+            string(name: 'ENV', value: ENV),
+            string(name: 'CONFIRM_APPLY', value: confirmApply),
+            string(name: 'PARENT_WORKSPACE', value: env.WORKSPACE)
+          ]
+        }
+      }
+    }
+    
+    stage('Deploy Application') {
+      when {
+        expression { params.DEPLOY_APP == true }
+      }
+      steps {
+        echo '🚀 Deploying URL Shortener Application...'
+        build job: '/TEMPLATES/Deploy-App', parameters: [
+          string(name: 'ENV', value: ENV),
+          string(name: 'PARENT_WORKSPACE', value: env.WORKSPACE)
+        ]
+      }
+    }
+    
+    stage('Deploy Monitoring') {
+      when {
+        expression { params.DEPLOY_MONITORING == true }
+      }
+      steps {
+        echo '📊 Deploying Monitoring Stack...'
+        build job: '/TEMPLATES/Deploy-Monitoring', parameters: [
+          string(name: 'ENV', value: ENV),
+          string(name: 'PARENT_WORKSPACE', value: env.WORKSPACE)
+        ]
+      }
+    }
+    
+    stage('Destroy Infrastructure') {
+      when {
+        expression { params.DESTROY_INFRA_ACTION != 'SKIP' }
+      }
+      steps {
+        echo '⚠️ DESTROYING Infrastructure...'
+
+        script {
+          def confirmApply = params.DESTROY_INFRA_ACTION == 'PLAN' ? 'YES' : 'NO'
+          build job: '/TEMPLATES/Destroy-Infra', parameters: [
+            string(name: 'ENV', value: ENV),
+            string(name: 'CONFIRM_APPLY', value: confirmApply),
+            string(name: 'PARENT_WORKSPACE', value: env.WORKSPACE)
+          ]
+        }
+      }
+    }
+  }
+  post {
+    success {
+      echo '=========================================='
+      echo '✅ LAB-PROD Pipeline completed successfully!'
+      echo '=========================================='
+    }
+    failure {
+      echo '=========================================='
+      echo '❌ LAB-PROD Pipeline failed. Check logs above.'
+      echo '=========================================='
+    }
+  }
+}
+    ]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

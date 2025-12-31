@@ -16,6 +16,11 @@
             </a>
           </choices>
         </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PARENT_WORKSPACE</name>
+          <description>Parent job workspace path</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>
@@ -24,18 +29,33 @@
 pipeline {
   agent any
   stages {
-    stage('Clone App') {
+    stage('Clone Deploy Scripts') {
       steps {
-        sh 'git clone https://github.com/inboxtoshashi/deploy_url_app.git $WORKSPACE/deploy_url_app'
+        sh 'rm -rf deploy_url_app && git clone https://github.com/inboxtoshashi/deploy_url_app.git deploy_url_app'
       }
     }
-    stage('Run main.sh') {
+    stage('Get EC2 IP from Terraform') {
       steps {
-        sh '''
-          cd $WORKSPACE/deploy_url_app
+        script {
+          def terraformBin = sh(script: 'which terraform || echo /opt/homebrew/bin/terraform', returnStdout: true).trim()
+          def terraformDir = "${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}"
+          def stateFile = "${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate"
+          env.EC2_IP = sh(
+            script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw public_ip",
+            returnStdout: true
+          ).trim()
+          echo "EC2 IP: ${env.EC2_IP}"
+        }
+      }
+    }
+    stage('Deploy App') {
+      steps {
+        sh """
+          cd \$WORKSPACE/deploy_url_app
           export SSH_KEY_PATH="/var/lib/jenkins/.ssh/url_app.pem"
-          ENV=${ENV} ./main.sh
-        '''
+          export EC2_IP="${env.EC2_IP}"
+          ENV=${params.ENV} ./main.sh
+        """
       }
     }
   }

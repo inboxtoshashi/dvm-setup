@@ -20,18 +20,33 @@ COOKIE_JAR="cookies.txt"
 ########################################
 wait_for_jenkins_http() {
   echo "▶ Waiting for Jenkins HTTP..."
+  local max_wait=120  # 2 minutes
+  local waited=0
   until curl -sf "$JENKINS_URL/login" >/dev/null 2>&1; do
+    if [ $waited -ge $max_wait ]; then
+      echo "❌ Jenkins failed to start after ${max_wait} seconds"
+      echo "   Check logs: tail -100 ~/.jenkins/jenkins.log"
+      exit 1
+    fi
     sleep 5
+    waited=$((waited + 5))
   done
   echo "✅ Jenkins HTTP ready"
 }
 
 wait_for_jenkins_cli() {
   echo "▶ Waiting for Jenkins CLI readiness..."
+  local max_wait=60  # 1 minute
+  local waited=0
   until java -jar "$CLI_JAR" -s "$JENKINS_URL" \
     -auth "$ADMIN_USER:$ADMIN_PASS" \
     who-am-i >/dev/null 2>&1; do
+    if [ $waited -ge $max_wait ]; then
+      echo "❌ Jenkins CLI not ready after ${max_wait} seconds"
+      exit 1
+    fi
     sleep 5
+    waited=$((waited + 5))
   done
   echo "✅ Jenkins CLI ready"
 }
@@ -318,34 +333,123 @@ CRUMB_FIELD=$(echo "$CRUMB_RESPONSE" | jq -r '.crumbRequestField')
 CRUMB_VALUE=$(echo "$CRUMB_RESPONSE" | jq -r '.crumb')
 
 ########################################
-# CREATE/UPDATE JOBS
+# CREATE/UPDATE JOBS AND FOLDERS
 ########################################
 echo "▶ Creating/updating jobs from $JOBS_DIR..."
 
+# Function to create a folder
+create_folder() {
+  local folder_name="$1"
+  
+  if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
+    "$JENKINS_URL/job/$folder_name/api/json" >/dev/null 2>&1; then
+    echo "  ✓ Folder exists: $folder_name"
+  else
+    echo "  ＋ Creating folder: $folder_name"
+    curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
+      -b "$COOKIE_JAR" \
+      -H "$CRUMB_FIELD: $CRUMB_VALUE" \
+      -H "Content-Type: application/xml" \
+      --data-binary '<com.cloudbees.hudson.plugins.folder.Folder plugin="cloudbees-folder">
+        <actions/>
+        <description></description>
+        <properties/>
+        <folderViews class="com.cloudbees.hudson.plugins.folder.views.DefaultFolderViewHolder">
+          <views>
+            <hudson.model.AllView>
+              <owner class="com.cloudbees.hudson.plugins.folder.Folder" reference="../../../.."/>
+              <name>All</name>
+              <filterExecutors>false</filterExecutors>
+              <filterQueue>false</filterQueue>
+            </hudson.model.AllView>
+          </views>
+          <tabBar class="hudson.views.DefaultViewsTabBar"/>
+        </folderViews>
+        <healthMetrics/>
+      </com.cloudbees.hudson.plugins.folder.Folder>' \
+      "$JENKINS_URL/createItem?name=$folder_name" >/dev/null 2>&1
+  fi
+}
+
+# Function to create/update a job
+create_or_update_job() {
+  local job_xml="$1"
+  local job_name="$2"
+  local job_path="$3"  # e.g., "" or "job/templates" or "job/lab-dev"
+  
+  if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
+    "$JENKINS_URL/$job_path/job/$job_name/api/json" >/dev/null 2>&1; then
+    
+    echo "  ↻ Updating job: $job_path/$job_name"
+    local response
+    response=$(curl -s -w "\n%{http_code}" -u "$ADMIN_USER:$ADMIN_PASS" \
+      -b "$COOKIE_JAR" \
+      -H "$CRUMB_FIELD: $CRUMB_VALUE" \
+      -H "Content-Type: application/xml" \
+      --data-binary @"$job_xml" \
+      "$JENKINS_URL/$job_path/job/$job_name/config.xml")
+    local http_code=$(echo "$response" | tail -n 1)
+    if [ "$http_code" != "200" ]; then
+      echo "  ⚠️  Update failed (HTTP $http_code) - preserving existing job to keep build history"
+      echo "      Fix: Manually delete job via Jenkins UI if you want to recreate it"
+    fi
+  else
+    echo "  ＋ Creating job: $job_path/$job_name"
+    local response
+    response=$(curl -s -w "\n%{http_code}" -u "$ADMIN_USER:$ADMIN_PASS" \
+      -b "$COOKIE_JAR" \
+      -H "$CRUMB_FIELD: $CRUMB_VALUE" \
+      -H "Content-Type: application/xml" \
+      --data-binary @"$job_xml" \
+      "$JENKINS_URL/$job_path/createItem?name=$job_name")
+    local http_code=$(echo "$response" | tail -n 1)
+    if [ "$http_code" != "200" ]; then
+      echo "  ⚠️  Failed to create (HTTP $http_code)"
+    fi
+  fi
+}
+
 shopt -s nullglob
+
+# Create folders first
+if [ -d "$JOBS_DIR/TEMPLATES" ]; then
+  create_folder "TEMPLATES"
+fi
+if [ -d "$JOBS_DIR/lab-dev" ]; then
+  create_folder "lab-dev"
+fi
+if [ -d "$JOBS_DIR/lab-prod" ]; then
+  create_folder "lab-prod"
+fi
+
+# Create/update jobs in TEMPLATES folder
+if [ -d "$JOBS_DIR/TEMPLATES" ]; then
+  for job_xml in "$JOBS_DIR/TEMPLATES"/*.xml; do
+    JOB_NAME="$(basename "$job_xml" .xml)"
+    create_or_update_job "$job_xml" "$JOB_NAME" "job/TEMPLATES"
+  done
+fi
+
+# Create/update jobs in lab-dev folder
+if [ -d "$JOBS_DIR/lab-dev" ]; then
+  for job_xml in "$JOBS_DIR/lab-dev"/*.xml; do
+    JOB_NAME="$(basename "$job_xml" .xml)"
+    create_or_update_job "$job_xml" "$JOB_NAME" "job/lab-dev"
+  done
+fi
+
+# Create/update jobs in lab-prod folder
+if [ -d "$JOBS_DIR/lab-prod" ]; then
+  for job_xml in "$JOBS_DIR/lab-prod"/*.xml; do
+    JOB_NAME="$(basename "$job_xml" .xml)"
+    create_or_update_job "$job_xml" "$JOB_NAME" "job/lab-prod"
+  done
+fi
+
+# Create/update root level jobs (backward compatibility)
 for job_xml in "$JOBS_DIR"/*.xml; do
   JOB_NAME="$(basename "$job_xml" .xml)"
-  
-  # Check if job exists
-  if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
-    "$JENKINS_URL/job/$JOB_NAME/api/json" >/dev/null 2>&1; then
-    
-    echo "  ↻ Updating job: $JOB_NAME"
-    curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
-      -b "$COOKIE_JAR" \
-      -H "$CRUMB_FIELD: $CRUMB_VALUE" \
-      -H "Content-Type: application/xml" \
-      --data-binary @"$job_xml" \
-      "$JENKINS_URL/job/$JOB_NAME/config.xml" >/dev/null
-  else
-    echo "  ＋ Creating job: $JOB_NAME"
-    curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
-      -b "$COOKIE_JAR" \
-      -H "$CRUMB_FIELD: $CRUMB_VALUE" \
-      -H "Content-Type: application/xml" \
-      --data-binary @"$job_xml" \
-      "$JENKINS_URL/createItem?name=$JOB_NAME" >/dev/null
-  fi
+  create_or_update_job "$job_xml" "$JOB_NAME" ""
 done
 
 ########################################
