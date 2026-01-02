@@ -21,6 +21,11 @@
           <description>Parent job workspace path</description>
           <defaultValue></defaultValue>
         </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>DEPLOY_URL_APP_REF</name>
+          <description>Git ref (branch/tag/commit) for deploy_url_app repo to test without merging</description>
+          <defaultValue>main</defaultValue>
+        </hudson.model.StringParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>
@@ -32,15 +37,28 @@ pipeline {
     stage('Clone Deploy Scripts') {
       steps {
         sh '''
+          REF="${DEPLOY_URL_APP_REF:-main}"
           if [ -d "deploy_url_app/.git" ]; then
             echo "Repository exists, updating..."
             cd deploy_url_app
             git fetch origin
-            git reset --hard origin/main
+            if git show-ref --verify --quiet "refs/remotes/origin/${REF}"; then
+              git checkout -B "${REF}" "origin/${REF}"
+            else
+              git checkout "${REF}"
+            fi
+            git reset --hard
             git clean -fd
           else
             echo "Repository does not exist, cloning..."
             git clone https://github.com/inboxtoshashi/deploy_url_app.git deploy_url_app
+            cd deploy_url_app
+            git fetch origin
+            if git show-ref --verify --quiet "refs/remotes/origin/${REF}"; then
+              git checkout -B "${REF}" "origin/${REF}"
+            else
+              git checkout "${REF}"
+            fi
           fi
         '''
       }
@@ -55,9 +73,8 @@ pipeline {
             (test -f /opt/homebrew/bin/terraform && echo /opt/homebrew/bin/terraform) || \
             echo "terraform"''', returnStdout: true).trim()
           echo "Terraform binary: ${terraformBin}"
-          def terraformDir = "${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}"
-          def stateFile = "${terraformDir}/terraform.tfstate"
-          echo "Terraform directory: ${terraformDir}"
+          // Use centralized state location
+          def stateFile = "${env.JENKINS_HOME}/workspace/terraform-states/${params.ENV}/terraform.tfstate"
           echo "State file: ${stateFile}"
           
           // Check if state file exists
@@ -66,15 +83,15 @@ pipeline {
             error("Terraform state file not found at ${stateFile}. Please run terraform apply first.")
           }
           
-          // Get EC2 IP from terraform output
+          // Get EC2 IP from terraform output (no need to cd, use -state flag)
           def outputResult = sh(
-            script: "cd ${terraformDir} && ${terraformBin} output -raw public_ip 2>&1",
+            script: "${terraformBin} output -state=${stateFile} -raw public_ip 2>&1",
             returnStdout: true
           ).trim()
           
           // Validate the output is an IP address
           if (outputResult =~ /Warning|Error|╷|│|╵/) {
-            error("Failed to get EC2 IP from Terraform. Output:\n${outputResult}\nPlease run 'terraform refresh' in ${terraformDir}")
+            error("Failed to get EC2 IP from Terraform. Output:\n${outputResult}\nPlease check state file at ${stateFile}")
           }
           
           env.EC2_IP = outputResult

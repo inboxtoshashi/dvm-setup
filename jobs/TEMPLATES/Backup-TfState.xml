@@ -1,0 +1,112 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@2.40">
+  <description>Scheduled Terraform State Backup Job</description>
+  <keepDependencies>false</keepDependencies>
+
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+
+        <!-- ENV dropdown -->
+        <hudson.model.ChoiceParameterDefinition>
+          <name>ENV</name>
+          <description>Select environment to backup</description>
+          <choices class="java.util.Arrays$ArrayList">
+            <a class="string-array">
+              <string>dev</string>
+              <string>prod</string>
+              <string>all</string>
+            </a>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
+    <script><![CDATA[
+pipeline {
+  agent any
+
+  stages {
+    stage('Backup Terraform State') {
+      steps {
+        script {
+          echo "🗄️ Starting Terraform State Backup for ${params.ENV}..."
+          
+          sh """
+            # Detect OS for path configuration
+            OS=\$(uname -s)
+            if [ "\$OS" = "Darwin" ]; then
+              JENKINS_HOME="\$HOME/.jenkins"
+            else
+              JENKINS_HOME="/var/lib/jenkins"
+            fi
+            
+            BACKUP_SCRIPT="\${JENKINS_HOME}/workspace/terraform-backup-script/backup_tfstate.sh"
+            STATE_DIR="\${JENKINS_HOME}/workspace/terraform-states"
+            
+            # Create backup script directory if not exists
+            mkdir -p "\${JENKINS_HOME}/workspace/terraform-backup-script"
+            
+            # Copy backup script from url_infra if it exists in any workspace
+            if [ ! -f "\${BACKUP_SCRIPT}" ]; then
+              # Try to find it in lab-dev workspace
+              if [ -f "\${JENKINS_HOME}/workspace/lab-dev/deploy-url-app/url_infra/scripts/backup_tfstate.sh" ]; then
+                cp "\${JENKINS_HOME}/workspace/lab-dev/deploy-url-app/url_infra/scripts/backup_tfstate.sh" "\${BACKUP_SCRIPT}"
+                chmod +x "\${BACKUP_SCRIPT}"
+              else
+                echo "❌ Backup script not found. Please run Git-Infra job first."
+                exit 1
+              fi
+            fi
+            
+            # Backup based on ENV parameter
+            if [ "${params.ENV}" = "all" ]; then
+              echo "📦 Backing up all environments..."
+              for env in dev prod; do
+                if [ -f "\${STATE_DIR}/\${env}/terraform.tfstate" ]; then
+                  echo "Backing up \${env}..."
+                  \${BACKUP_SCRIPT} \${env} "\${STATE_DIR}/\${env}/terraform.tfstate" || true
+                else
+                  echo "⚠️  No state file found for \${env}, skipping..."
+                fi
+              done
+            else
+              echo "📦 Backing up ${params.ENV} environment..."
+              if [ -f "\${STATE_DIR}/${params.ENV}/terraform.tfstate" ]; then
+                \${BACKUP_SCRIPT} ${params.ENV} "\${STATE_DIR}/${params.ENV}/terraform.tfstate" || true
+              else
+                echo "⚠️  No state file found for ${params.ENV}"
+                exit 1
+              fi
+            fi
+            
+            # Show backup status
+            echo ""
+            echo "📊 Backup Summary:"
+            echo "=================="
+            ls -lht "\${STATE_DIR}/backups/" | head -10
+          """
+        }
+      }
+    }
+  }
+  
+  post {
+    success {
+      echo '✅ Terraform state backup completed successfully!'
+    }
+    failure {
+      echo '❌ Terraform state backup failed. Check logs above.'
+    }
+  }
+}
+    ]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

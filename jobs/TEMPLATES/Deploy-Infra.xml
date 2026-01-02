@@ -130,14 +130,49 @@ pipeline {
                   -var-file=../${params.ENV}.tfvars \\
                   -state=\${STATE_FILE} \\
                   -auto-approve
-                
-                # Backup state after successful apply
-                echo "📦 Backing up terraform state..."
-                ${params.PARENT_WORKSPACE}/url_infra/scripts/backup_tfstate.sh ${params.ENV} \${STATE_FILE}
               """
             }
 
           }
+        }
+      }
+    }
+    
+    stage('Backup State') {
+      when {
+        expression { params.CONFIRM_APPLY == 'NO' }
+      }
+      steps {
+        script {
+          echo '📦 Backing up terraform state...'
+          sh """
+            # Detect OS for path configuration
+            OS=\$(uname -s)
+            if [ "\$OS" = "Darwin" ]; then
+              JENKINS_HOME="\$HOME/.jenkins"
+            else
+              JENKINS_HOME="/var/lib/jenkins"
+            fi
+            
+            STATE_FILE="\${JENKINS_HOME}/workspace/terraform-states/${params.ENV}/terraform.tfstate"
+            BACKUP_SCRIPT="${params.PARENT_WORKSPACE}/url_infra/scripts/backup_tfstate.sh"
+            
+            # Check if state file exists
+            if [ -f "\${STATE_FILE}" ]; then
+              # Run backup script, don't fail pipeline if backup fails
+              if [ -f "\${BACKUP_SCRIPT}" ]; then
+                if \${BACKUP_SCRIPT} ${params.ENV} \${STATE_FILE}; then
+                  echo "✅ Backup completed successfully"
+                else
+                  echo "⚠️  Backup failed but continuing pipeline..."
+                fi
+              else
+                echo "⚠️  Backup script not found at \${BACKUP_SCRIPT}, skipping backup"
+              fi
+            else
+              echo "⚠️  No state file found, skipping backup"
+            fi
+          """
         }
       }
     }

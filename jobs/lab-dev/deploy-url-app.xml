@@ -53,6 +53,11 @@
             </a>
           </choices>
         </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>DEPLOY_URL_APP_REF</name>
+          <description>Git ref (branch/tag/commit) of deploy_url_app to test (no merge needed)</description>
+          <defaultValue>main</defaultValue>
+        </hudson.model.StringParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>
@@ -77,6 +82,7 @@ pipeline {
         echo "Deploy Monitoring: ${params.DEPLOY_MONITORING}"
         echo "Deploy Infra: ${params.DEPLOY_INFRA_ACTION}"
         echo "Destroy Infra: ${params.DESTROY_INFRA_ACTION}"
+        echo "Deploy Scripts Ref: ${params.DEPLOY_URL_APP_REF}"
         echo '=========================================='
       }
     }
@@ -89,8 +95,11 @@ pipeline {
         echo '📥 Cloning/Updating Infrastructure Repository...'
         sh '''
           if [ -d "url_infra/.git" ]; then
-            echo "Repository exists, pulling latest changes..."
-            cd url_infra && git pull
+            echo "Repository exists, fetching and resetting to latest..."
+            cd url_infra
+            git fetch origin
+            DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+            git reset --hard origin/${DEFAULT_BRANCH}
           else
             echo "Repository does not exist, cloning..."
             git clone https://github.com/inboxtoshashi/url_infra.git url_infra
@@ -107,8 +116,11 @@ pipeline {
         echo '📥 Cloning/Updating Application Repository...'
         sh '''
           if [ -d "urlshortener_docker/.git" ]; then
-            echo "Repository exists, pulling latest changes..."
-            cd urlshortener_docker && git pull
+            echo "Repository exists, fetching and resetting to latest..."
+            cd urlshortener_docker
+            git fetch origin
+            DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "master")
+            git reset --hard origin/${DEFAULT_BRANCH}
           else
             echo "Repository does not exist, cloning..."
             git clone https://github.com/inboxtoshashi/urlshortener_docker.git urlshortener_docker
@@ -125,8 +137,11 @@ pipeline {
         echo '📥 Cloning/Updating Monitoring Repository...'
         sh '''
           if [ -d "monitoring_stack/.git" ]; then
-            echo "Repository exists, pulling latest changes..."
-            cd monitoring_stack && git pull
+            echo "Repository exists, fetching and resetting to latest..."
+            cd monitoring_stack
+            git fetch origin
+            DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+            git reset --hard origin/${DEFAULT_BRANCH}
           else
             echo "Repository does not exist, cloning..."
             git clone https://github.com/inboxtoshashi/monitoring_stack.git monitoring_stack
@@ -160,7 +175,8 @@ pipeline {
         echo '🚀 Deploying URL Shortener Application...'
         build job: '/TEMPLATES/Deploy-App', parameters: [
           string(name: 'ENV', value: ENV),
-          string(name: 'PARENT_WORKSPACE', value: env.WORKSPACE)
+          string(name: 'PARENT_WORKSPACE', value: env.WORKSPACE),
+          string(name: 'DEPLOY_URL_APP_REF', value: params.DEPLOY_URL_APP_REF)
         ]
       }
     }
