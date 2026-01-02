@@ -31,19 +31,50 @@ pipeline {
   stages {
     stage('Clone Deploy Scripts') {
       steps {
-        sh 'rm -rf deploy_url_app && git clone https://github.com/inboxtoshashi/deploy_url_app.git deploy_url_app'
+        sh '''
+          if [ -d "deploy_url_app/.git" ]; then
+            echo "Repository exists, pulling latest changes..."
+            cd deploy_url_app && git pull
+          else
+            echo "Repository does not exist, cloning..."
+            git clone https://github.com/inboxtoshashi/deploy_url_app.git deploy_url_app
+          fi
+        '''
       }
     }
     stage('Get EC2 IP from Terraform') {
       steps {
         script {
-          def terraformBin = sh(script: 'which terraform || echo /opt/homebrew/bin/terraform', returnStdout: true).trim()
+          // Find terraform - check common locations for both Linux and macOS
+          def terraformBin = sh(script: '''which terraform 2>/dev/null || \
+            (test -f /usr/local/bin/terraform && echo /usr/local/bin/terraform) || \
+            (test -f /usr/bin/terraform && echo /usr/bin/terraform) || \
+            (test -f /opt/homebrew/bin/terraform && echo /opt/homebrew/bin/terraform) || \
+            echo "terraform"''', returnStdout: true).trim()
+          echo "Terraform binary: ${terraformBin}"
           def terraformDir = "${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}"
-          def stateFile = "${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate"
-          env.EC2_IP = sh(
-            script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw public_ip",
+          def stateFile = "${terraformDir}/terraform.tfstate"
+          echo "Terraform directory: ${terraformDir}"
+          echo "State file: ${stateFile}"
+          
+          // Check if state file exists
+          def stateExists = sh(script: "test -f ${stateFile} && echo 'exists' || echo 'missing'", returnStdout: true).trim()
+          if (stateExists == 'missing') {
+            error("Terraform state file not found at ${stateFile}. Please run terraform apply first.")
+          }
+          
+          // Get EC2 IP from terraform output
+          def outputResult = sh(
+            script: "cd ${terraformDir} && ${terraformBin} output -raw public_ip 2>&1",
             returnStdout: true
           ).trim()
+          
+          // Validate the output is an IP address
+          if (outputResult =~ /Warning|Error|╷|│|╵/) {
+            error("Failed to get EC2 IP from Terraform. Output:\n${outputResult}\nPlease run 'terraform refresh' in ${terraformDir}")
+          }
+          
+          env.EC2_IP = outputResult
           echo "EC2 IP: ${env.EC2_IP}"
         }
       }
@@ -52,8 +83,17 @@ pipeline {
       steps {
         sh """
           cd \$WORKSPACE/deploy_url_app
-          export SSH_KEY_PATH="/var/lib/jenkins/.ssh/url_app.pem"
+          
+          # Detect platform and set SSH key path
+          if [ "\$(uname -s)" = "Darwin" ]; then
+            export SSH_KEY_PATH="\$HOME/.ssh/url_app.pem"
+          else
+            export SSH_KEY_PATH="/var/lib/jenkins/.ssh/url_app.pem"
+          fi
+          
           export EC2_IP="${env.EC2_IP}"
+          export TERRAFORM_WORKSPACE="${params.PARENT_WORKSPACE}"
+          
           ENV=${params.ENV} ./main.sh
         """
       }

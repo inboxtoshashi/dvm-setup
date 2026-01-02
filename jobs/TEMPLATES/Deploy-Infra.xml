@@ -54,7 +54,11 @@ pipeline {
     stage('Deploy Infra') {
       steps {
         script {
-          def terraformBin = sh(script: 'which terraform || echo /opt/homebrew/bin/terraform', returnStdout: true).trim()
+          def terraformBin = sh(script: '''which terraform 2>/dev/null || \
+            (test -f /usr/local/bin/terraform && echo /usr/local/bin/terraform) || \
+            (test -f /usr/bin/terraform && echo /usr/bin/terraform) || \
+            (test -f /opt/homebrew/bin/terraform && echo /opt/homebrew/bin/terraform) || \
+            echo "terraform"''', returnStdout: true).trim()
           echo "Using Terraform: ${terraformBin}"
           
           withCredentials([[

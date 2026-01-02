@@ -37,19 +37,30 @@ pipeline {
     stage('Get EC2 IP and Copy Monitoring Script') {
       steps {
         script {
-          def terraformBin = sh(script: 'which terraform || echo /opt/homebrew/bin/terraform', returnStdout: true).trim()
+          def terraformBin = sh(script: '''which terraform 2>/dev/null || \
+            (test -f /usr/local/bin/terraform && echo /usr/local/bin/terraform) || \
+            (test -f /usr/bin/terraform && echo /usr/bin/terraform) || \
+            (test -f /opt/homebrew/bin/terraform && echo /opt/homebrew/bin/terraform) || \
+            echo "terraform"''', returnStdout: true).trim()
           def terraformDir = "${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}"
-          def stateFile = "${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate"
+          def stateFile = "${terraformDir}/terraform.tfstate"
           def ec2Ip = sh(
-            script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw public_ip",
+            script: "cd ${terraformDir} && ${terraformBin} output -raw public_ip",
             returnStdout: true
           ).trim()
           
           echo "EC2 IP: ${ec2Ip}"
           
+          // Detect platform and set SSH key path
+          def sshKey = sh(script: '''if [ "$(uname -s)" = "Darwin" ]; then 
+            echo "$HOME/.ssh/url_app.pem"
+          else
+            echo "/var/lib/jenkins/.ssh/url_app.pem"
+          fi''', returnStdout: true).trim()
+          
           sh """
             cd \$WORKSPACE/deploy_url_app
-            scp -i /var/lib/jenkins/.ssh/url_app.pem \
+            scp -i ${sshKey} \
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               deploy_monitoring/deploy_monitoring.sh \
               ubuntu@${ec2Ip}:/home/ubuntu/
@@ -60,23 +71,32 @@ pipeline {
     stage('Deploy Monitoring Stack') {
       steps {
         script {
-          def terraformBin = sh(script: 'which terraform || echo /opt/homebrew/bin/terraform', returnStdout: true).trim()
+          def terraformBin = sh(script: '''which terraform 2>/dev/null || \
+            (test -f /usr/local/bin/terraform && echo /usr/local/bin/terraform) || \
+            (test -f /usr/bin/terraform && echo /usr/bin/terraform) || \
+            (test -f /opt/homebrew/bin/terraform && echo /opt/homebrew/bin/terraform) || \
+            echo "terraform"''', returnStdout: true).trim()
           def terraformDir = "${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}"
-          def stateFile = "${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate"
+          def stateFile = "${terraformDir}/terraform.tfstate"
           def ec2Ip = sh(
-            script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw public_ip",
+            script: "cd ${terraformDir} && ${terraformBin} output -raw public_ip",
             returnStdout: true
           ).trim()
           
-          def appName = sh(
-            script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw app_name",
-            returnStdout: true
-          ).trim()
+          // Note: app_name output may not exist in all terraform modules
+          def appName = "urlshortener"
           
           echo "Deploying monitoring for: ${appName}"
           
+          // Detect platform and set SSH key path
+          def sshKey = sh(script: '''if [ "$(uname -s)" = "Darwin" ]; then 
+            echo "$HOME/.ssh/url_app.pem"
+          else
+            echo "/var/lib/jenkins/.ssh/url_app.pem"
+          fi''', returnStdout: true).trim()
+          
           sh """
-            ssh -i /var/lib/jenkins/.ssh/url_app.pem \
+            ssh -i ${sshKey} \
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               ubuntu@${ec2Ip} << 'ENDSSH'
               cd /home/ubuntu

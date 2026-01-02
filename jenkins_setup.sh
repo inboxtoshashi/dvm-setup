@@ -74,28 +74,52 @@ echo "▶ Detected platform: $PLATFORM"
 echo "▶ Installing dependencies..."
 
 if [[ "$PLATFORM" == "mac" ]]; then
-  command -v brew >/dev/null || {
-    echo "❌ Homebrew not installed"
-    exit 1
-  }
+  # Check if Homebrew is installed
+  if ! command -v brew >/dev/null 2>&1; then
+    echo "▶ Installing Homebrew..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    
+    # Add Homebrew to PATH for Apple Silicon
+    if [[ $(uname -m) == "arm64" ]]; then
+      echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+      eval "$(/opt/homebrew/bin/brew shellenv)"
+    fi
+  fi
+  
+  echo "▶ Installing Java, Jenkins, jq, git, terraform..."
   brew update
-  brew install jenkins-lts openjdk jq
+  brew install --quiet jenkins-lts openjdk jq git terraform 2>/dev/null || true
   brew services restart jenkins-lts
   export JAVA_HOME="$(brew --prefix openjdk)"
   export PATH="$JAVA_HOME/bin:$PATH"
+  
 else
+  echo "▶ Installing Java, Jenkins, jq, git, awscli, terraform..."
   sudo apt update
-  sudo apt install -y openjdk-17-jdk curl jq gnupg
+  sudo apt install -y openjdk-17-jdk curl jq gnupg git awscli wget unzip
   
-  curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key \
-    | sudo tee /usr/share/keyrings/jenkins-keyring.asc >/dev/null
+  # Install Terraform if not present
+  if ! command -v terraform >/dev/null 2>&1; then
+    echo "▶ Installing Terraform..."
+    wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+    sudo apt update && sudo apt install -y terraform
+  fi
   
-  echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
-    https://pkg.jenkins.io/debian-stable binary/ \
-    | sudo tee /etc/apt/sources.list.d/jenkins.list >/dev/null
+  # Install Jenkins if not present
+  if ! command -v jenkins >/dev/null 2>&1; then
+    echo "▶ Installing Jenkins..."
+    curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key \
+      | sudo tee /usr/share/keyrings/jenkins-keyring.asc >/dev/null
+    
+    echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
+      https://pkg.jenkins.io/debian-stable binary/ \
+      | sudo tee /etc/apt/sources.list.d/jenkins.list >/dev/null
+    
+    sudo apt update
+    sudo apt install -y jenkins
+  fi
   
-  sudo apt update
-  sudo apt install -y jenkins
   sudo systemctl enable jenkins
   sudo systemctl restart jenkins
   
@@ -103,7 +127,7 @@ else
   export PATH="$JAVA_HOME/bin:$PATH"
 fi
 
-java -version
+echo "✅ Installed: Java $(java -version 2>&1 | head -n1), Git $(git --version | head -n1), Terraform $(terraform version | head -n1)"
 
 ########################################
 # DETECT JENKINS URL
@@ -453,12 +477,66 @@ for job_xml in "$JOBS_DIR"/*.xml; do
 done
 
 ########################################
+# POST-SETUP INSTRUCTIONS
+########################################
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo "✅ Jenkins Setup Complete!"
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+echo "🔗 Jenkins URL: $JENKINS_URL"
+echo "🔑 Username: $ADMIN_USER"
+echo "🔑 Password: $ADMIN_PASS"
+echo ""
+echo "📋 MANUAL STEPS REQUIRED:"
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+echo "1️⃣  Configure AWS Credentials:"
+echo "   Option A - Using AWS CLI (Recommended):"
+if [[ "$PLATFORM" == "mac" ]]; then
+  echo "      aws configure"
+  echo "      # Enter your AWS Access Key, Secret Key, and Region"
+else
+  echo "      sudo su - jenkins"
+  echo "      aws configure"
+  echo "      # Enter your AWS Access Key, Secret Key, and Region"
+  echo "      exit"
+fi
+echo ""
+echo "   Option B - Jenkins UI:"
+echo "      Go to: $JENKINS_URL/manage/credentials/"
+echo "      • Update 'aws-creds' with your actual AWS credentials"
+echo ""
+echo "2️⃣  Setup SSH Key for EC2 Access:"
+if [[ "$PLATFORM" == "mac" ]]; then
+  echo "      mkdir -p ~/.ssh"
+  echo "      # Copy your url_app.pem key to:"
+  echo "      #   ~/.ssh/url_app.pem"
+  echo "      chmod 400 ~/.ssh/url_app.pem"
+else
+  echo "      # Copy your url_app.pem to the Jenkins server, then:"
+  echo "      sudo mkdir -p /var/lib/jenkins/.ssh"
+  echo "      sudo cp /path/to/url_app.pem /var/lib/jenkins/.ssh/"
+  echo "      sudo chown jenkins:jenkins /var/lib/jenkins/.ssh/url_app.pem"
+  echo "      sudo chmod 400 /var/lib/jenkins/.ssh/url_app.pem"
+fi
+echo ""
+echo "3️⃣  Verify Setup:"
+echo "      # Test AWS credentials"
+if [[ "$PLATFORM" == "mac" ]]; then
+  echo "      aws sts get-caller-identity"
+else
+  echo "      sudo su - jenkins -c 'aws sts get-caller-identity'"
+fi
+echo ""
+echo "      # Test SSH key (replace with your EC2 IP)"
+if [[ "$PLATFORM" == "mac" ]]; then
+  echo "      ssh -i ~/.ssh/url_app.pem ubuntu@<EC2_IP> echo 'SSH works'"
+else
+  echo "      sudo su - jenkins -c 'ssh -i ~/.ssh/url_app.pem ubuntu@<EC2_IP> echo \"SSH works\"'"
+fi
+
+########################################
 # CLEANUP
 ########################################
 rm -f "$COOKIE_JAR" "$CLI_JAR"
-
-echo ""
-echo "✅ Jenkins bootstrap complete!"
-echo "🔗 URL: $JENKINS_URL"
-echo "🔑 Login: $ADMIN_USER / $ADMIN_PASS"
-echo ""
