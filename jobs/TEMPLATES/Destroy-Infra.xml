@@ -69,13 +69,20 @@ pipeline {
           ]]) {
 
             sh """
+              # Detect OS for path configuration
+              OS=\$(uname -s)
+              if [ "\$OS" = "Darwin" ]; then
+                JENKINS_HOME="\$HOME/.jenkins"
+              else
+                JENKINS_HOME="/var/lib/jenkins"
+              fi
+              
+              STATE_FILE="\${JENKINS_HOME}/workspace/terraform-states/${params.ENV}/terraform.tfstate"
+              
               # Backup existing state before destroy
-              if [ -f "${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate" ]; then
-                TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
-                mkdir -p ${params.PARENT_WORKSPACE}/tfstate-${params.ENV}-backups
-                cp ${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate \\
-                   ${params.PARENT_WORKSPACE}/tfstate-${params.ENV}-backups/terraform.tfstate.\${TIMESTAMP}
-                echo "✅ Backed up state to tfstate-${params.ENV}-backups/terraform.tfstate.\${TIMESTAMP}"
+              if [ -f "\${STATE_FILE}" ]; then
+                echo "📦 Backing up terraform state before destroy..."
+                ${params.PARENT_WORKSPACE}/url_infra/scripts/backup_tfstate.sh ${params.ENV} \${STATE_FILE}
               fi
               
               # Run terraform
@@ -87,22 +94,42 @@ pipeline {
 
             if (params.CONFIRM_DESTROY == 'YES') {
               sh """
+                # Detect OS for path configuration
+                OS=\$(uname -s)
+                if [ "\$OS" = "Darwin" ]; then
+                  JENKINS_HOME="\$HOME/.jenkins"
+                else
+                  JENKINS_HOME="/var/lib/jenkins"
+                fi
+                
+                STATE_FILE="\${JENKINS_HOME}/workspace/terraform-states/${params.ENV}/terraform.tfstate"
+                
                 cd ${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}
                 export AWS_ACCESS_KEY_ID="\${AWS_ACCESS_KEY_ID}"
                 export AWS_SECRET_ACCESS_KEY="\${AWS_SECRET_ACCESS_KEY}"
                 ${terraformBin} plan \\
                   -var-file=../${params.ENV}.tfvars \\
-                  -state=${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate \\
+                  -state=\${STATE_FILE} \\
                   -destroy
               """
             } else {
               sh """
+                # Detect OS for path configuration
+                OS=\$(uname -s)
+                if [ "\$OS" = "Darwin" ]; then
+                  JENKINS_HOME="\$HOME/.jenkins"
+                else
+                  JENKINS_HOME="/var/lib/jenkins"
+                fi
+                
+                STATE_FILE="\${JENKINS_HOME}/workspace/terraform-states/${params.ENV}/terraform.tfstate"
+                
                 cd ${params.PARENT_WORKSPACE}/url_infra/labs/${params.ENV}
                 export AWS_ACCESS_KEY_ID="\${AWS_ACCESS_KEY_ID}"
                 export AWS_SECRET_ACCESS_KEY="\${AWS_SECRET_ACCESS_KEY}"
                 ${terraformBin} destroy \\
                   -var-file=../${params.ENV}.tfvars \\
-                  -state=${params.PARENT_WORKSPACE}/tfstate-${params.ENV}/terraform.tfstate \\
+                  -state=\${STATE_FILE} \\
                   -auto-approve
               """
             }

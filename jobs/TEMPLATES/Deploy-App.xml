@@ -33,8 +33,11 @@ pipeline {
       steps {
         sh '''
           if [ -d "deploy_url_app/.git" ]; then
-            echo "Repository exists, pulling latest changes..."
-            cd deploy_url_app && git pull
+            echo "Repository exists, updating..."
+            cd deploy_url_app
+            git fetch origin
+            git reset --hard origin/main
+            git clean -fd
           else
             echo "Repository does not exist, cloning..."
             git clone https://github.com/inboxtoshashi/deploy_url_app.git deploy_url_app
