@@ -57,64 +57,105 @@ CREATED=0
 UPDATED=0
 FAILED=0
 
-for job_xml in "$JOBS_DIR"/*.xml; do
-  JOB_NAME="$(basename "$job_xml" .xml)"
+# First, create folders (TEMPLATES, lab-dev, lab-prod)
+for folder in "$JOBS_DIR"/*/; do
+  [ -d "$folder" ] || continue
+  FOLDER_NAME="$(basename "$folder")"
   
-  # Check if job exists
-  if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
-    "$JENKINS_URL/job/$JOB_NAME/api/json" >/dev/null 2>&1; then
+  # Skip if it's not a directory or is hidden
+  [[ "$FOLDER_NAME" == .* ]] && continue
+  
+  log_info "Ensuring folder exists: $FOLDER_NAME"
+  
+  # Check if folder exists in Jenkins
+  if ! curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
+    "$JENKINS_URL/job/$FOLDER_NAME/api/json" >/dev/null 2>&1; then
     
-    log_info "Updating: $JOB_NAME"
-    if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
-      -X POST \
+    # Create folder using Folder plugin XML with proper AllView configuration
+    FOLDER_XML="<?xml version='1.1' encoding='UTF-8'?>
+<com.cloudbees.hudson.plugins.folder.Folder plugin=\"cloudbees-folder\">
+  <actions/>
+  <description>$FOLDER_NAME folder</description>
+  <properties/>
+  <folderViews class=\"com.cloudbees.hudson.plugins.folder.views.DefaultFolderViewHolder\">
+    <views>
+      <hudson.model.AllView>
+        <owner class=\"com.cloudbees.hudson.plugins.folder.Folder\" reference=\"../../../..\"/>
+        <name>All</name>
+        <filterExecutors>false</filterExecutors>
+        <filterQueue>false</filterQueue>
+        <properties class=\"hudson.model.View\$PropertyList\"/>
+      </hudson.model.AllView>
+    </views>
+    <tabBar class=\"hudson.views.DefaultViewsTabBar\"/>
+  </folderViews>
+  <healthMetrics/>
+</com.cloudbees.hudson.plugins.folder.Folder>"
+    
+    if echo "$FOLDER_XML" | curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
       -b "$COOKIE_JAR" \
       -H "$CRUMB_FIELD: $CRUMB_VALUE" \
       -H "Content-Type: application/xml" \
-      --data-binary @"$job_xml" \
-      "$JENKINS_URL/job/$JOB_NAME/config.xml" >/dev/null 2>&1; then
-      UPDATED=$((UPDATED + 1))
-      log_success "  Updated: $JOB_NAME"
+      --data-binary @- \
+      "$JENKINS_URL/createItem?name=$FOLDER_NAME" >/dev/null 2>&1; then
+      log_success "  ✓ Folder exists: $FOLDER_NAME"
+    fi
+  else
+    log_success "  ✓ Folder exists: $FOLDER_NAME"
+  fi
+done
+
+# Then, create jobs inside folders and at root
+for folder in "$JOBS_DIR"/ "$JOBS_DIR"/*/; do
+  for job_xml in "$folder"*.xml; do
+    [ -f "$job_xml" ] || continue
+    
+    JOB_NAME="$(basename "$job_xml" .xml)"
+    FOLDER_PATH=""
+    
+    # Determine if job is in a folder
+    if [[ "$folder" != "$JOBS_DIR/" ]]; then
+      FOLDER_NAME="$(basename "$(dirname "$job_xml")")"
+      FOLDER_PATH="job/$FOLDER_NAME/"
+      JOB_DISPLAY="$FOLDER_NAME/$JOB_NAME"
     else
-      # Update failed, try delete and recreate
-      log_warning "  Update failed, trying delete and recreate..."
+      JOB_DISPLAY="$JOB_NAME"
+    fi
+    
+    # Check if job exists
+    if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
+      "$JENKINS_URL/${FOLDER_PATH}job/$JOB_NAME/api/json" >/dev/null 2>&1; then
+      
+      log_info "Updating: $JOB_DISPLAY"
       if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
         -X POST \
         -b "$COOKIE_JAR" \
         -H "$CRUMB_FIELD: $CRUMB_VALUE" \
-        "$JENKINS_URL/job/$JOB_NAME/doDelete" >/dev/null 2>&1; then
-        sleep 2
-        if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
-          -b "$COOKIE_JAR" \
-          -H "$CRUMB_FIELD: $CRUMB_VALUE" \
-          -H "Content-Type: application/xml" \
-          --data-binary @"$job_xml" \
-          "$JENKINS_URL/createItem?name=$JOB_NAME" >/dev/null 2>&1; then
-          UPDATED=$((UPDATED + 1))
-          log_success "  Recreated: $JOB_NAME"
-        else
-          FAILED=$((FAILED + 1))
-          log_error "  Failed to recreate: $JOB_NAME"
-        fi
+        -H "Content-Type: application/xml" \
+        --data-binary @"$job_xml" \
+        "$JENKINS_URL/${FOLDER_PATH}job/$JOB_NAME/config.xml" >/dev/null 2>&1; then
+        UPDATED=$((UPDATED + 1))
+        log_success "  ↻ Updated: $JOB_DISPLAY"
       else
         FAILED=$((FAILED + 1))
-        log_error "  Failed: $JOB_NAME"
+        log_error "  ✗ Update failed: $JOB_DISPLAY"
+      fi
+    else
+      log_info "Creating: $JOB_DISPLAY"
+      if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
+        -b "$COOKIE_JAR" \
+        -H "$CRUMB_FIELD: $CRUMB_VALUE" \
+        -H "Content-Type: application/xml" \
+        --data-binary @"$job_xml" \
+        "$JENKINS_URL/${FOLDER_PATH}createItem?name=$JOB_NAME" >/dev/null; then
+        CREATED=$((CREATED + 1))
+        log_success "  ✓ Created: $JOB_DISPLAY"
+      else
+        FAILED=$((FAILED + 1))
+        log_error "  ✗ Failed: $JOB_DISPLAY"
       fi
     fi
-  else
-    log_info "Creating: $JOB_NAME"
-    if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
-      -b "$COOKIE_JAR" \
-      -H "$CRUMB_FIELD: $CRUMB_VALUE" \
-      -H "Content-Type: application/xml" \
-      --data-binary @"$job_xml" \
-      "$JENKINS_URL/createItem?name=$JOB_NAME" >/dev/null; then
-      CREATED=$((CREATED + 1))
-      log_success "  Created: $JOB_NAME"
-    else
-      FAILED=$((FAILED + 1))
-      log_error "  Failed: $JOB_NAME"
-    fi
-  fi
+  done
 done
 
 ########################################

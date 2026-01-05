@@ -1,0 +1,120 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@2.40">
+  <actions/>
+  <description>Deploy App Job - Supports both dev and prod environments</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>ENV</name>
+          <description>Select the environment to deploy to</description>
+          <choices class="java.util.Arrays$ArrayList">
+            <a class="string-array">
+              <string>dev</string>
+              <string>prod</string>
+            </a>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PARENT_WORKSPACE</name>
+          <description>Parent job workspace path</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>DEPLOY_URL_APP_REF</name>
+          <description>Git ref (branch/tag/commit) for deploy_url_app repo to test without merging</description>
+          <defaultValue>main</defaultValue>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
+    <script><![CDATA[
+pipeline {
+  agent any
+  options {
+    disableConcurrentBuilds()
+  }
+  stages {
+    stage('Validate Parent Workspace') {
+      steps {
+        script {
+          if (!params.PARENT_WORKSPACE || params.PARENT_WORKSPACE.trim().isEmpty()) {
+            error("PARENT_WORKSPACE parameter is required. This job should be called from an orchestrator job.")
+          }
+          echo "Using repos from parent workspace: ${params.PARENT_WORKSPACE}"
+          
+          // Verify deploy_url_app exists (it contains deploy script that clones urlshortener_docker)
+          def repoPath = "${params.PARENT_WORKSPACE}/deploy_url_app"
+          def exists = sh(script: "test -d '${repoPath}' && echo 'exists' || echo 'missing'", returnStdout: true).trim()
+          if (exists == 'missing') {
+            error("Required repository 'deploy_url_app' not found in parent workspace at ${repoPath}. Run GIT_APP first.")
+          }
+          echo "✓ Found deploy_url_app at ${repoPath}"
+        }
+      }
+    }
+    stage('Get EC2 IP from Terraform') {
+      steps {
+        script {
+          // Find terraform - check common locations for both Linux and macOS
+          def terraformBin = sh(script: '''which terraform 2>/dev/null || \
+            (test -f /usr/local/bin/terraform && echo /usr/local/bin/terraform) || \
+            (test -f /usr/bin/terraform && echo /usr/bin/terraform) || \
+            (test -f /opt/homebrew/bin/terraform && echo /opt/homebrew/bin/terraform) || \
+            echo "terraform"''', returnStdout: true).trim()
+          echo "Terraform binary: ${terraformBin}"
+          // Use centralized state location
+          def stateFile = "${env.JENKINS_HOME}/workspace/terraform-states/${params.ENV}/terraform.tfstate"
+          echo "State file: ${stateFile}"
+          
+          // Check if state file exists
+          def stateExists = sh(script: "test -f ${stateFile} && echo 'exists' || echo 'missing'", returnStdout: true).trim()
+          if (stateExists == 'missing') {
+            error("Terraform state file not found at ${stateFile}. Please run terraform apply first.")
+          }
+          
+          // Get EC2 IP from terraform output (no need to cd, use -state flag)
+          def outputResult = sh(
+            script: "${terraformBin} output -state=${stateFile} -raw public_ip 2>&1",
+            returnStdout: true
+          ).trim()
+          
+          // Validate the output is an IP address
+          if (outputResult =~ /Warning|Error|╷|│|╵/) {
+            error("Failed to get EC2 IP from Terraform. Output:\n${outputResult}\nPlease check state file at ${stateFile}")
+          }
+          
+          env.EC2_IP = outputResult
+          echo "EC2 IP: ${env.EC2_IP}"
+        }
+      }
+    }
+    stage('Deploy App') {
+      steps {
+        sh """
+          cd "${params.PARENT_WORKSPACE}/deploy_url_app"
+          
+          # Detect platform and set SSH key path
+          if [ "\$(uname -s)" = "Darwin" ]; then
+            export SSH_KEY_PATH="\$HOME/.ssh/url_app.pem"
+          else
+            export SSH_KEY_PATH="/var/lib/jenkins/.ssh/url_app.pem"
+          fi
+          
+          export EC2_IP="${env.EC2_IP}"
+          export TERRAFORM_WORKSPACE="${params.PARENT_WORKSPACE}"
+          
+          ENV=${params.ENV} ./main.sh
+        """
+      }
+    }
+  }
+}
+    ]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>
