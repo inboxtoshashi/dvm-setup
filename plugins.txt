@@ -3,3 +3,6 @@ workflow-cps
 credentials
 credentials-binding
 aws-credentials
+cloudbees-folder
+rebuild
+blueocean

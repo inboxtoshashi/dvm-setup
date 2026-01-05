@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source /tmp/jenkins-setup-env.sh
+[[ -f /tmp/jenkins-setup-env.sh ]] && source /tmp/jenkins-setup-env.sh
 source "$SCRIPT_DIR/utils.sh"
 
 export ADMIN_USER="admin"
@@ -22,6 +22,17 @@ echo ""
 # DETECT JENKINS URL
 ########################################
 detect_environment
+
+########################################
+# CHECK IF ALREADY CONFIGURED
+########################################
+log_info "Checking if Jenkins is already configured..."
+if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" "$JENKINS_URL/api/json" >/dev/null 2>&1; then
+  log_success "Jenkins is already configured with admin credentials"
+  log_info "Skipping security setup..."
+  echo "export JENKINS_URL=$JENKINS_URL" > /tmp/jenkins-setup-env.sh
+  exit 0
+fi
 
 ########################################
 # WAIT FOR INITIAL JENKINS START
@@ -93,6 +104,26 @@ log_success "Security configuration created"
 # RESTART TO APPLY SECURITY
 ########################################
 restart_jenkins "to apply security"
+
+########################################
+# CONFIGURE EXECUTORS
+########################################
+log_info "Configuring Jenkins executors..."
+wait_for_jenkins_cli
+
+EXECUTOR_SCRIPT='
+import jenkins.model.*
+
+def jenkins = Jenkins.instance
+jenkins.setNumExecutors(5)
+jenkins.save()
+
+println("Set executors to: " + jenkins.getNumExecutors())
+'
+
+echo "$EXECUTOR_SCRIPT" | java -jar "$CLI_JAR" -s "$JENKINS_URL" \
+  -auth "$ADMIN_USER:$ADMIN_PASS" \
+  groovy = >/dev/null 2>&1 || log_warning "Could not set executors (will use default: 2)"
 
 log_success "Security setup completed"
 log_info "Admin credentials: $ADMIN_USER / $ADMIN_PASS"

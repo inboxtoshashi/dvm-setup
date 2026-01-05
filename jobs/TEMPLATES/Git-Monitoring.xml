@@ -1,0 +1,80 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@2.40">
+  <actions/>
+  <description>Git Clone Monitoring Stack Repository</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>PARENT_WORKSPACE</name>
+          <description>Parent job workspace path where repos should be cloned</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONITORING_REF</name>
+          <description>Branch, tag, or commit to checkout (default: main)</description>
+          <defaultValue>main</defaultValue>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
+    <script><![CDATA[
+pipeline {
+  agent any
+  options {
+    disableConcurrentBuilds()
+  }
+  stages {
+    stage('Clone Monitoring Stack') {
+      steps {
+        sh '''
+          REF="${MONITORING_REF:-main}"
+          echo "Target reference: ${REF}"
+          
+          if [ -d "${PARENT_WORKSPACE}/monitoring_stack/.git" ]; then
+            echo "Repository exists, fetching..."
+            cd ${PARENT_WORKSPACE}/monitoring_stack
+            git fetch --all --tags --prune
+            git remote set-head origin --auto >/dev/null 2>&1 || true
+          else
+            echo "Repository does not exist, cloning..."
+            git clone https://github.com/inboxtoshashi/monitoring_stack.git ${PARENT_WORKSPACE}/monitoring_stack
+            cd ${PARENT_WORKSPACE}/monitoring_stack
+          fi
+          
+          # Try to checkout - git will handle branches, tags, and commits
+          echo "Attempting to checkout: ${REF}"
+          if git checkout "${REF}" 2>/dev/null; then
+            echo "✓ Successfully checked out ${REF}"
+          elif git checkout -b "${REF}" "origin/${REF}" 2>/dev/null; then
+            echo "✓ Successfully checked out remote branch ${REF}"
+          else
+            echo "✗ Error: '${REF}' not found in repository"
+            echo "Available branches:"
+            git branch -r | head -10
+            exit 1
+          fi
+          
+          echo "Current commit:"
+          git log -1 --oneline
+        '''
+      }
+    }
+  }
+  post {
+    success {
+      echo '✅ Monitoring Stack repository cloned successfully!'
+    }
+    failure {
+      echo '❌ Failed to clone Monitoring Stack repository.'
+    }
+  }
+}
+    ]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

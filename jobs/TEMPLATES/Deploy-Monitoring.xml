@@ -28,24 +28,29 @@
     <script><![CDATA[
 pipeline {
   agent any
+  options {
+    disableConcurrentBuilds()
+  }
   stages {
-    stage('Clone Deploy Scripts') {
+    stage('Validate Parent Workspace') {
       steps {
-        sh '''
-          if [ -d "$WORKSPACE/deploy_url_app/.git" ]; then
-            echo "Repository exists, updating..."
-            cd $WORKSPACE/deploy_url_app
-            git fetch origin
-            git checkout main
-            git pull origin main
-          else
-            echo "Repository does not exist, cloning..."
-            git clone https://github.com/inboxtoshashi/deploy_url_app.git $WORKSPACE/deploy_url_app
-          fi
-        '''
+        script {
+          if (!params.PARENT_WORKSPACE || params.PARENT_WORKSPACE.trim().isEmpty()) {
+            error("PARENT_WORKSPACE parameter is required. This job should be called from an orchestrator job.")
+          }
+          echo "Using repos from parent workspace: ${params.PARENT_WORKSPACE}"
+          
+          // Verify monitoring_stack exists
+          def repoPath = "${params.PARENT_WORKSPACE}/monitoring_stack"
+          def exists = sh(script: "test -d '${repoPath}' && echo 'exists' || echo 'missing'", returnStdout: true).trim()
+          if (exists == 'missing') {
+            error("Required repository 'monitoring_stack' not found in parent workspace at ${repoPath}. Run GIT_MONITORING first.")
+          }
+          echo "✓ Found monitoring_stack at ${repoPath}"
+        }
       }
     }
-    stage('Get EC2 IP and Copy Monitoring Script') {
+    stage('Copy Monitoring Files to EC2') {
       steps {
         script {
           def terraformBin = sh(script: '''which terraform 2>/dev/null || \
@@ -78,10 +83,12 @@ pipeline {
           fi''', returnStdout: true).trim()
           
           sh """
-            cd \$WORKSPACE/deploy_url_app
+            cd "${params.PARENT_WORKSPACE}/monitoring_stack"
+            
+            # Copy all monitoring files to EC2
             scp -i ${sshKey} \
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-              deploy_monitoring/deploy_monitoring.sh \
+              -r monitoring.yml prometheus/ grafana/ blackbox/ \
               ubuntu@${ec2Ip}:/home/ubuntu/
           """
         }
@@ -110,7 +117,7 @@ pipeline {
             returnStdout: true
           ).trim()
           
-          // Get app_name from terraform output (from tags.App in tfvars)
+          // Get app_name from terraform output
           def appName = sh(
             script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw app_name",
             returnStdout: true
@@ -130,10 +137,16 @@ pipeline {
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               ubuntu@${ec2Ip} << 'ENDSSH'
               cd /home/ubuntu
-              dos2unix deploy_monitoring.sh || true
-              chmod +x deploy_monitoring.sh
+              
+              # Stop existing monitoring if running
+              docker compose -f monitoring.yml down 2>/dev/null || true
+              
+              # Deploy monitoring stack
               export APP_NAME="${appName}"
-              ./deploy_monitoring.sh
+              docker compose -f monitoring.yml up -d
+              
+              # Show status
+              docker compose -f monitoring.yml ps
 ENDSSH
           """
         }

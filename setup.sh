@@ -81,9 +81,6 @@ for step_info in "${STEPS[@]}"; do
   echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${BOLD}Step $CURRENT_STEP/$TOTAL_STEPS: $DESCRIPTION${NC}"
   echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  Access Information:
-  🔗 URL:      http://localhost:8080
-  👤 Username: admin
   if bash "$SCRIPTS_DIR/$SCRIPT_NAME"; then
     echo -e "${GREEN}✅ Step $CURRENT_STEP completed successfully${NC}"
   else
