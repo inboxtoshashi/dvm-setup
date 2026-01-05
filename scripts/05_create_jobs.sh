@@ -127,6 +127,8 @@ for folder in "$JOBS_DIR"/ "$JOBS_DIR"/*/; do
       "$JENKINS_URL/${FOLDER_PATH}job/$JOB_NAME/api/json" >/dev/null 2>&1; then
       
       log_info "Updating: $JOB_DISPLAY"
+      
+      # Try to update first
       if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
         -X POST \
         -b "$COOKIE_JAR" \
@@ -137,8 +139,28 @@ for folder in "$JOBS_DIR"/ "$JOBS_DIR"/*/; do
         UPDATED=$((UPDATED + 1))
         log_success "  ↻ Updated: $JOB_DISPLAY"
       else
-        FAILED=$((FAILED + 1))
-        log_error "  ✗ Update failed: $JOB_DISPLAY"
+        # If update fails, delete and recreate
+        log_info "  Update failed, deleting and recreating..."
+        curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
+          -X POST \
+          -b "$COOKIE_JAR" \
+          -H "$CRUMB_FIELD: $CRUMB_VALUE" \
+          "$JENKINS_URL/${FOLDER_PATH}job/$JOB_NAME/doDelete" >/dev/null 2>&1
+        
+        sleep 1
+        
+        if curl -sf -u "$ADMIN_USER:$ADMIN_PASS" \
+          -b "$COOKIE_JAR" \
+          -H "$CRUMB_FIELD: $CRUMB_VALUE" \
+          -H "Content-Type: application/xml" \
+          --data-binary @"$job_xml" \
+          "$JENKINS_URL/${FOLDER_PATH}createItem?name=$JOB_NAME" >/dev/null; then
+          CREATED=$((CREATED + 1))
+          log_success "  ✓ Recreated: $JOB_DISPLAY"
+        else
+          FAILED=$((FAILED + 1))
+          log_error "  ✗ Failed to recreate: $JOB_DISPLAY"
+        fi
       fi
     else
       log_info "Creating: $JOB_DISPLAY"

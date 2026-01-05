@@ -6,3 +6,4 @@ aws-credentials
 cloudbees-folder
 rebuild
 blueocean
+ansicolor
