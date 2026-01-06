@@ -80,7 +80,7 @@ pipeline {
                 echo "📦 Backing up terraform state before destroy..."
                 
                 # Create backup directory
-                BACKUP_DIR="\${JENKINS_HOME}/workspace/tf-backup/${params.ENV}"
+                BACKUP_DIR="\${JENKINS_HOME}/workspace/terraform-states/backups/${params.ENV}"
                 mkdir -p "\${BACKUP_DIR}"
                 
                 # Create backup with timestamp

@@ -149,7 +149,7 @@ pipeline {
             # Check if state file exists
             if [ -f "\${STATE_FILE}" ]; then
               # Create backup directory
-              BACKUP_DIR="\${JENKINS_HOME}/workspace/tf-backup/${params.ENV}"
+              BACKUP_DIR="\${JENKINS_HOME}/workspace/terraform-states/backups/${params.ENV}"
               mkdir -p "\${BACKUP_DIR}"
               
               # Create backup with timestamp
