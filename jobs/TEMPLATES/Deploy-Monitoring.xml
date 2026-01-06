@@ -75,12 +75,55 @@ pipeline {
           
           echo "EC2 IP: ${ec2Ip}"
           
+          // Get app_name from terraform output for dashboard titles
+          def appName = "App"  // Default value
+          try {
+            appName = sh(
+              script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw app_name 2>/dev/null || echo 'App'",
+              returnStdout: true
+            ).trim()
+          } catch (Exception e) {
+            echo "⚠️  Could not read app_name from tfstate, using default: ${appName}"
+          }
+          
+          echo "Preparing dashboards for: ${appName}"
+          
           // Detect platform and set SSH key path
           def sshKey = sh(script: '''if [ "$(uname -s)" = "Darwin" ]; then 
             echo "$HOME/.ssh/url_app.pem"
           else
             echo "/var/lib/jenkins/.ssh/url_app.pem"
           fi''', returnStdout: true).trim()
+          
+          // Configure dashboards from config.yml
+          sh """
+            cd "${params.PARENT_WORKSPACE}/monitoring_stack"
+            
+            # Run configure script to replace placeholders
+            chmod +x configure.sh
+            ./configure.sh
+            
+            echo "✓ Dashboards configured from config.yml"
+          """
+          
+          // Update dashboard titles based on app_name
+          sh """
+            cd "${params.PARENT_WORKSPACE}/monitoring_stack/grafana/provisioning/dashboards"
+            
+            # Backup original files
+            cp api_dashboard.json api_dashboard.json.bak
+            cp app_monitoring_dashboard.json app_monitoring_dashboard.json.bak
+            
+            # Update titles dynamically
+            if [ "${appName}" != "App" ]; then
+              # Use app_name as prefix (e.g., "MyApp API Dashboard")
+              sed -i.tmp 's/"title": "API Dashboard"/"title": "${appName} API Dashboard"/' api_dashboard.json
+              sed -i.tmp 's/"title": "App Monitoring"/"title": "${appName} App Monitoring"/' app_monitoring_dashboard.json
+            fi
+            # If appName is "App" (default), leave titles as "API Dashboard" and "App Monitoring"
+            
+            rm -f *.tmp
+          """
           
           sh """
             cd "${params.PARENT_WORKSPACE}/monitoring_stack"
@@ -90,6 +133,11 @@ pipeline {
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -r monitoring.yml prometheus/ grafana/ blackbox/ \
               ubuntu@${ec2Ip}:/home/ubuntu/
+            
+            # Restore original dashboard files
+            cd grafana/provisioning/dashboards
+            mv api_dashboard.json.bak api_dashboard.json
+            mv app_monitoring_dashboard.json.bak app_monitoring_dashboard.json
           """
         }
       }
@@ -117,11 +165,16 @@ pipeline {
             returnStdout: true
           ).trim()
           
-          // Get app_name from terraform output
-          def appName = sh(
-            script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw app_name",
-            returnStdout: true
-          ).trim()
+          // Get app_name from terraform output, use default if not available
+          def appName = "App"  // Default value
+          try {
+            appName = sh(
+              script: "cd ${terraformDir} && ${terraformBin} output -state=${stateFile} -raw app_name 2>/dev/null || echo 'App'",
+              returnStdout: true
+            ).trim()
+          } catch (Exception e) {
+            echo "⚠️  Could not read app_name from tfstate, using default: ${appName}"
+          }
           
           echo "Deploying monitoring for: ${appName}"
           
@@ -138,15 +191,22 @@ pipeline {
               ubuntu@${ec2Ip} << 'ENDSSH'
               cd /home/ubuntu
               
+              # Ensure application network exists (created by urlshortener_docker)
+              # If app is running, network already exists. If not, create it manually.
+              docker network inspect monitoring >/dev/null 2>&1 || docker network create monitoring
+              
               # Stop existing monitoring if running
-              docker compose -f monitoring.yml down 2>/dev/null || true
+              docker-compose -f monitoring.yml down 2>/dev/null || true
               
               # Deploy monitoring stack
               export APP_NAME="${appName}"
-              docker compose -f monitoring.yml up -d
+              docker-compose -f monitoring.yml up -d
+              
+              # Restart Grafana to reload dashboards
+              docker restart grafana
               
               # Show status
-              docker compose -f monitoring.yml ps
+              docker-compose -f monitoring.yml ps
 ENDSSH
           """
         }

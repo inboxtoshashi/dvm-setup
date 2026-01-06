@@ -34,10 +34,12 @@ pipeline {
           echo "Target reference: ${REF}"
           
           if [ -d "${PARENT_WORKSPACE}/deploy_url_app/.git" ]; then
-            echo "Repository exists, fetching..."
+            echo "Repository exists, updating..."
             cd ${PARENT_WORKSPACE}/deploy_url_app
             git fetch --all --tags --prune
             git remote set-head origin --auto >/dev/null 2>&1 || true
+            # Reset any local changes
+            git reset --hard HEAD
           else
             echo "Repository does not exist, cloning..."
             git clone https://github.com/inboxtoshashi/deploy_url_app.git ${PARENT_WORKSPACE}/deploy_url_app
@@ -48,6 +50,8 @@ pipeline {
           echo "Attempting to checkout: ${REF}"
           if git checkout "${REF}" 2>/dev/null; then
             echo "✓ Successfully checked out ${REF}"
+            # Pull latest changes for this ref
+            git pull origin "${REF}" 2>/dev/null || echo "Already up to date"
           elif git checkout -b "${REF}" "origin/${REF}" 2>/dev/null; then
             echo "✓ Successfully checked out remote branch ${REF}"
           else
